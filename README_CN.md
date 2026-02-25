@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🧠 memory-lancedb-pro
+# 🧠 memory-lancedb-pro · OpenClaw Plugin
 
 **[OpenClaw](https://github.com/openclaw/openclaw) 增强型 LanceDB 长期记忆插件**
 
