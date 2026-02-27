@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.7
+
+- Fix: resolve `agentId` from hook context (`ctx?.agentId`) for `before_agent_start` and `agent_end`, restoring per-agent scope isolation when using multi-agent setups.
+
 ## 1.0.6
 
 - Fix: auto-recall injection now correctly skips cron prompts wrapped as `[cron:...] run ...` (reduces token usage for cron jobs).
