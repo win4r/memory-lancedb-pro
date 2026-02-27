@@ -365,14 +365,14 @@ const memoryLanceDBProPlugin = {
 
     // Auto-recall: inject relevant memories before agent starts
     if (config.autoRecall !== false) {
-      api.on("before_agent_start", async (event) => {
+      api.on("before_agent_start", async (event, ctx) => {
         if (!event.prompt || shouldSkipRetrieval(event.prompt)) {
           return;
         }
 
         try {
           // Determine agent ID and accessible scopes
-          const agentId = event.agentId || "main";
+          const agentId = ctx?.agentId || "main";
           const accessibleScopes = scopeManager.getAccessibleScopes(agentId);
 
           const results = await retriever.retrieve({
@@ -409,14 +409,14 @@ const memoryLanceDBProPlugin = {
 
     // Auto-capture: analyze and store important information after agent ends
     if (config.autoCapture !== false) {
-      api.on("agent_end", async (event) => {
+      api.on("agent_end", async (event, ctx) => {
         if (!event.success || !event.messages || event.messages.length === 0) {
           return;
         }
 
         try {
           // Determine agent ID and default scope
-          const agentId = event.agentId || "main";
+          const agentId = ctx?.agentId || "main";
           const defaultScope = scopeManager.getDefaultScope(agentId);
 
           // Extract text content from messages
