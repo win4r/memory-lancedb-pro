@@ -385,6 +385,19 @@ OpenClaw 会把每个 Agent 的完整会话自动落盘为 JSONL：
 
 > 脚本只读 session JSONL，不会修改原始日志。
 
+### （可选）启用 Agent 来源白名单（提高信噪比）
+
+默认情况下，extractor 会扫描 **所有 Agent**（但会排除 `memory-distiller` 自身，防止自我吞噬）。
+
+如果你只想从某些 Agent 蒸馏（例如只蒸馏 `main` + `code-agent`），可以设置环境变量：
+
+```bash
+export OPENCLAW_JSONL_DISTILL_ALLOWED_AGENT_IDS="main,code-agent"
+```
+
+- 不设置 / 空 / `*` / `all`：扫描全部（默认）
+- 逗号分隔列表：只扫描列表内 agentId
+
 ### 推荐部署（独立 distiller agent）
 
 #### 1）创建 distiller agent（示例用 gpt-5.2）

@@ -442,6 +442,19 @@ The script is **safe**: it never modifies session logs.
 
 By default it skips historical reset snapshots (`*.reset.*`) and excludes the distiller agent itself (`memory-distiller`) to prevent self-ingestion loops.
 
+### Optional: restrict distillation sources (allowlist)
+
+By default, the extractor scans **all agents** (except `memory-distiller`).
+
+If you want higher signal (e.g., only distill from your main assistant + coding bot), set:
+
+```bash
+export OPENCLAW_JSONL_DISTILL_ALLOWED_AGENT_IDS="main,code-agent"
+```
+
+- Unset / empty / `*` / `all` → allow all agents (default)
+- Comma-separated list → only those agents are scanned
+
 ### Recommended setup (dedicated distiller agent)
 
 #### 1) Create a dedicated agent

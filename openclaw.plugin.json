@@ -2,7 +2,7 @@
   "id": "memory-lancedb-pro",
   "name": "Memory (LanceDB Pro)",
   "description": "Enhanced LanceDB-backed long-term memory with hybrid retrieval, multi-scope isolation, and management CLI",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "kind": "memory",
   "configSchema": {
     "type": "object",
@@ -118,7 +118,11 @@
           },
           "rerankProvider": {
             "type": "string",
-            "enum": ["jina", "siliconflow", "pinecone"],
+            "enum": [
+              "jina",
+              "siliconflow",
+              "pinecone"
+            ],
             "default": "jina",
             "description": "Reranker provider format. Determines request/response shape and auth header."
           },
