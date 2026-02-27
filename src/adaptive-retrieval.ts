@@ -33,11 +33,37 @@ const FORCE_RETRIEVE_PATTERNS = [
 ];
 
 /**
+ * Normalize the raw prompt before applying skip/force rules.
+ *
+ * OpenClaw may wrap cron prompts like:
+ *   "[cron:<jobId> <jobName>] run ..."
+ *
+ * We strip such prefixes so command-style prompts are properly detected and we
+ * can skip auto-recall injection (saves tokens).
+ */
+function normalizeQuery(query: string): string {
+  let s = query.trim();
+
+  // Strip OpenClaw cron wrapper prefix.
+  s = s.replace(/^\[cron:[^\]]+\]\s*/i, "");
+
+  // Strip OpenClaw injected metadata header used in some transcripts.
+  if (/^Conversation info \(untrusted metadata\):/i.test(s)) {
+    s = s.replace(/^Conversation info \(untrusted metadata\):\s*/i, "");
+    // If there is a blank-line separator, keep only the part after it.
+    const parts = s.split(/\n\s*\n/, 2);
+    if (parts.length === 2) s = parts[1];
+  }
+
+  return s.trim();
+}
+
+/**
  * Determine if a query should skip memory retrieval.
  * Returns true if retrieval should be skipped.
  */
 export function shouldSkipRetrieval(query: string): boolean {
-  const trimmed = query.trim();
+  const trimmed = normalizeQuery(query);
 
   // Force retrieve if query has memory-related intent (checked FIRST,
   // before length check, so short CJK queries like "你记得吗" aren't skipped)

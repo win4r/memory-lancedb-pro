@@ -104,6 +104,11 @@ def _clean_text(s: str) -> str:
     if "<relevant-memories>" in s:
         s = re.sub(r"<relevant-memories>[\s\S]*?</relevant-memories>", "", s)
 
+    # Strip OpenClaw transcript headers that add noise but not meaning.
+    # Keep the actual user content that follows.
+    s = re.sub(r"^Conversation info \(untrusted metadata\):\s*\n+", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^Replied message \(untrusted, for context\):\s*\n+", "", s, flags=re.IGNORECASE)
+
     # Drop embedded JSON blocks (often metadata) to reduce token waste.
     s = re.sub(r"```json[\s\S]*?```", "", s)
 
@@ -118,12 +123,27 @@ def _is_noise(s: str) -> bool:
     for p in NOISE_PREFIXES:
         if s.startswith(p):
             return True
+
+    lower = s.lower()
+
+    # Drop transcript/system boilerplate that should never become memories.
+    if "[queued messages while agent was busy]" in lower:
+        return True
+    if "you are running a boot check" in lower or "boot.md — gateway startup health check" in lower:
+        return True
+    if "read heartbeat.md" in lower:
+        return True
+    if "[claude_code_done]" in lower or "claude_code_done" in lower:
+        return True
+
     # Skip overly long blocks (logs / dumps). The distiller can still capture the essence later.
     if len(s) > 2000:
         return True
+
     # Skip pure code fences (usually tool output).
     if s.strip().startswith("```") and s.strip().endswith("```"):
         return True
+
     return False
 
 
