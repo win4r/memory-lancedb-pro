@@ -177,6 +177,16 @@ Recommendations:
 - If you use `${JINA_API_KEY}` (or any `${...}` variable) in config, ensure the **Gateway service process** has that environment variable (system services often do **not** inherit your interactive shell env).
 - After changing plugin config, run `openclaw gateway restart`.
 
+### Jina API keys (embedding + rerank)
+
+- **Embedding**: set `embedding.apiKey` to your Jina key (recommended: use an env var like `${JINA_API_KEY}`).
+- **Rerank** (when `retrieval.rerankProvider: "jina"`): you can typically use the **same** Jina key for `retrieval.rerankApiKey`.
+- If you use a different rerank provider (`siliconflow`, `pinecone`, etc.), `retrieval.rerankApiKey` should be that provider’s key.
+
+Key storage guidance:
+- Avoid committing secrets into git.
+- Using `${...}` env vars is fine, but make sure the **Gateway service process** has those env vars (system services often do not inherit your interactive shell environment).
+
 ### What is the “OpenClaw workspace”?
 
 In OpenClaw, the **agent workspace** is the agent’s working directory (default: `~/.openclaw/workspace`).
@@ -303,7 +313,7 @@ openclaw config get plugins.slots.memory
     "bm25Weight": 0.3,
     "minScore": 0.3,
     "rerank": "cross-encoder",
-    "rerankApiKey": "jina_xxx",
+    "rerankApiKey": "${JINA_API_KEY}",
     "rerankModel": "jina-reranker-v2-base-multilingual",
     "rerankEndpoint": "https://api.jina.ai/v1/rerank",
     "rerankProvider": "jina",

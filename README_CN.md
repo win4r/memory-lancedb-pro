@@ -178,6 +178,16 @@ openclaw config get plugins.entries.memory-lancedb-pro
 - 如果配置里使用 `${JINA_API_KEY}`（或任何 `${...}` 变量），务必确保运行 Gateway 的**服务进程环境**里真的有这些变量（systemd/launchd/docker 通常不会继承你终端的 export）。
 - 修改插件配置后，运行 `openclaw gateway restart` 使其生效。
 
+### Jina API Key（Embedding + Rerank）如何填写
+
+- **Embedding**：将 `embedding.apiKey` 设置为你的 Jina key（推荐用环境变量 `${JINA_API_KEY}`）。
+- **Rerank**（当 `retrieval.rerankProvider: "jina"`）：通常可以直接复用同一个 Jina key，填到 `retrieval.rerankApiKey`。
+- 如果你选择了其它 rerank provider（如 `siliconflow` / `pinecone`），则 `retrieval.rerankApiKey` 应填写对应提供商的 key。
+
+Key 存储建议：
+- 不要把 key 提交到 git。
+- 使用 `${...}` 环境变量没问题，但务必确保运行 Gateway 的**服务进程环境**里真的有该变量（systemd/launchd/docker 往往不会继承你终端的 export）。
+
 ### 什么是 “OpenClaw workspace”？
 
 在 OpenClaw 中，**agent workspace（工作区）** 是 Agent 的工作目录（默认：`~/.openclaw/workspace`）。
@@ -304,7 +314,7 @@ openclaw config get plugins.slots.memory
     "bm25Weight": 0.3,
     "minScore": 0.3,
     "rerank": "cross-encoder",
-    "rerankApiKey": "jina_xxx",
+    "rerankApiKey": "${JINA_API_KEY}",
     "rerankModel": "jina-reranker-v2-base-multilingual",
     "candidatePoolSize": 20,
     "recencyHalfLifeDays": 14,
