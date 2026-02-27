@@ -84,6 +84,20 @@ function resolveEnvVars(value: string): string {
   });
 }
 
+function parsePositiveInt(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return undefined;
+    const resolved = resolveEnvVars(s);
+    const n = Number(resolved);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  return undefined;
+}
+
 // ============================================================================
 // Capture & Category Detection (from old plugin)
 // ============================================================================
@@ -689,7 +703,9 @@ function parsePluginConfig(value: unknown): PluginConfig {
         apiKey,
         model: typeof embedding.model === "string" ? embedding.model : "text-embedding-3-small",
         baseURL: typeof embedding.baseURL === "string" ? resolveEnvVars(embedding.baseURL) : undefined,
-        dimensions: typeof embedding.dimensions === "number" ? embedding.dimensions : undefined,
+        // Accept number, numeric string, or env-var string (e.g. "${EMBED_DIM}").
+        // Also accept legacy top-level `dimensions` for convenience.
+        dimensions: parsePositiveInt(embedding.dimensions ?? cfg.dimensions),
         taskQuery: typeof embedding.taskQuery === "string" ? embedding.taskQuery : undefined,
         taskPassage: typeof embedding.taskPassage === "string" ? embedding.taskPassage : undefined,
         normalized: typeof embedding.normalized === "boolean" ? embedding.normalized : undefined,
