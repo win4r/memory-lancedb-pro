@@ -33,8 +33,9 @@ export interface RetrievalConfig {
   /** Reranker provider format. Determines request/response shape and auth header.
    *  - "jina" (default): Authorization: Bearer, string[] documents, results[].relevance_score
    *  - "siliconflow": same format as jina (alias, for clarity)
+   *  - "voyage": Authorization: Bearer, string[] documents, data[].relevance_score
    *  - "pinecone": Api-Key header, {text}[] documents, data[].score */
-  rerankProvider?: "jina" | "siliconflow" | "pinecone";
+  rerankProvider?: "jina" | "siliconflow" | "voyage" | "pinecone";
   /**
    * Length normalization: penalize long entries that dominate via sheer keyword
    * density. Formula: score *= 1 / (1 + log2(charLen / anchor)).
@@ -115,7 +116,7 @@ function clamp01(value: number, fallback: number): number {
 // Rerank Provider Adapters
 // ============================================================================
 
-type RerankProvider = "jina" | "siliconflow" | "pinecone";
+type RerankProvider = "jina" | "siliconflow" | "voyage" | "pinecone";
 
 interface RerankItem { index: number; score: number }
 
@@ -142,6 +143,18 @@ function buildRerankRequest(
           documents: documents.map(text => ({ text })),
           top_n: topN,
           rank_fields: ["text"],
+        },
+      };
+    case "voyage":
+      return {
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        body: {
+          model,
+          query,
+          documents,
         },
       };
     case "siliconflow":
@@ -173,6 +186,12 @@ function parseRerankResponse(
       const items = data.data as Array<{ index: number; score: number }> | undefined;
       if (!Array.isArray(items)) return null;
       return items.map(r => ({ index: r.index, score: r.score }));
+    }
+    case "voyage": {
+      // Voyage: { data: [{ index, relevance_score }] }
+      const items = data.data as Array<{ index: number; relevance_score: number }> | undefined;
+      if (!Array.isArray(items)) return null;
+      return items.map(r => ({ index: r.index, score: r.relevance_score }));
     }
     case "siliconflow":
     case "jina":

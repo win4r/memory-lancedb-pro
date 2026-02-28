@@ -129,6 +129,7 @@
             "enum": [
               "jina",
               "siliconflow",
+              "voyage",
               "pinecone"
             ],
             "default": "jina",
@@ -329,7 +330,7 @@
     },
     "retrieval.rerankProvider": {
       "label": "Reranker Provider",
-      "help": "Provider format: jina (default), siliconflow, or pinecone",
+      "help": "Provider format: jina (default), siliconflow, voyage, or pinecone",
       "advanced": true
     },
     "retrieval.candidatePoolSize": {
