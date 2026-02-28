@@ -155,6 +155,8 @@ function buildRerankRequest(
           model,
           query,
           documents,
+          // Voyage uses top_k (not top_n) to limit reranked outputs.
+          top_k: topN,
         },
       };
     case "siliconflow":
