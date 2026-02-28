@@ -236,6 +236,8 @@ export class Embedder {
     const payload: any = {
       model: this.model,
       input,
+      // Force float output to avoid SDK default base64 decoding path.
+      encoding_format: "float",
     };
 
     if (task) payload.task = task;

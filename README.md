@@ -393,7 +393,12 @@ Cross-encoder reranking supports multiple providers via `rerankProvider`:
 |----------|-----------------|----------|---------------|
 | **Jina** (default) | `jina` | `https://api.jina.ai/v1/rerank` | `jina-reranker-v3` |
 | **SiliconFlow** (free tier available) | `siliconflow` | `https://api.siliconflow.com/v1/rerank` | `BAAI/bge-reranker-v2-m3`, `Qwen/Qwen3-Reranker-8B` |
+| **Voyage AI** | `voyage` | `https://api.voyageai.com/v1/rerank` | `rerank-2.5` |
 | **Pinecone** | `pinecone` | `https://api.pinecone.io/rerank` | `bge-reranker-v2-m3` |
+
+Notes:
+- `voyage` sends `{ model, query, documents }` without `top_n`.
+- Voyage responses are parsed from `data[].relevance_score`.
 
 <details>
 <summary><strong>SiliconFlow Example</strong></summary>
@@ -406,6 +411,23 @@ Cross-encoder reranking supports multiple providers via `rerankProvider`:
     "rerankEndpoint": "https://api.siliconflow.com/v1/rerank",
     "rerankApiKey": "sk-xxx",
     "rerankModel": "BAAI/bge-reranker-v2-m3"
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>Voyage Example</strong></summary>
+
+```json
+{
+  "retrieval": {
+    "rerank": "cross-encoder",
+    "rerankProvider": "voyage",
+    "rerankEndpoint": "https://api.voyageai.com/v1/rerank",
+    "rerankApiKey": "${VOYAGE_API_KEY}",
+    "rerankModel": "rerank-2.5"
   }
 }
 ```
