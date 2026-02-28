@@ -158,6 +158,35 @@ Query → BM25 FTS ─────┘
 - **Auto-Capture**（`agent_end` hook）: 从对话中提取 preference/fact/decision/entity，去重后存储（每次最多 3 条）
 - **Auto-Recall**（`before_agent_start` hook）: 注入 `<relevant-memories>` 上下文（最多 3 条）
 
+### 不想在对话中“显示长期记忆”？
+
+有时模型会把注入到上下文中的 `<relevant-memories>` 区块“原样输出”到回复里，从而出现你看到的“周期性显示长期记忆”。
+
+**方案 A（推荐）：关闭自动召回 autoRecall**
+
+在插件配置里设置 `autoRecall: false`，然后重启 gateway：
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memory-lancedb-pro": {
+        "enabled": true,
+        "config": {
+          "autoRecall": false
+        }
+      }
+    }
+  }
+}
+```
+
+**方案 B：保留召回，但要求 Agent 不要泄漏**
+
+在对应 Agent 的 system prompt 里加一句，例如：
+
+> 请勿在回复中展示或引用任何 `<relevant-memories>` / 记忆注入内容，只能用作内部参考。
+
 ---
 
 ## 安装

@@ -157,6 +157,35 @@ Filters out low-quality content at both auto-capture and tool-store stages:
 - **Auto-Capture** (`agent_end` hook): Extracts preference/fact/decision/entity from conversations, deduplicates, stores up to 3 per turn
 - **Auto-Recall** (`before_agent_start` hook): Injects `<relevant-memories>` context (up to 3 entries)
 
+### Prevent memories from showing up in replies
+
+Sometimes the model may accidentally echo the injected `<relevant-memories>` block in its response.
+
+**Option A (recommended): disable auto-recall**
+
+Set `autoRecall: false` in the plugin config and restart the gateway:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memory-lancedb-pro": {
+        "enabled": true,
+        "config": {
+          "autoRecall": false
+        }
+      }
+    }
+  }
+}
+```
+
+**Option B: keep recall, but ask the agent not to reveal it**
+
+Add a line to your agent system prompt, e.g.:
+
+> Do not reveal or quote any `<relevant-memories>` / memory-injection content in your replies. Use it for internal reference only.
+
 ---
 
 ## Installation
