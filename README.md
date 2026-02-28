@@ -410,7 +410,20 @@ OpenClaw already persists **full session transcripts** as JSONL files:
 
 This plugin focuses on **high-quality long-term memory**. If you dump raw transcripts into LanceDB, retrieval quality quickly degrades.
 
-Instead, you can run an **hourly distiller** that:
+Instead, **recommended (2026-02+)** is a **non-blocking `/new` pipeline**:
+
+- Trigger: `command:new` (you type `/new`)
+- Hook: enqueue a tiny JSON task file (fast; no LLM calls inside the hook)
+- Worker: a user-level systemd service watches the inbox and runs **Gemini Map-Reduce** on the session JSONL transcript
+- Store: writes **0–20** high-signal, atomic lessons into LanceDB Pro via `openclaw memory-pro import`
+- Notify: optional Telegram/Discord notification (even if 0 lessons)
+
+See the self-contained example files in:
+- `examples/new-session-distill/`
+
+---
+
+Legacy option: an **hourly distiller** cron that:
 
 1) Incrementally reads only the **newly appended tail** of each session JSONL (byte-offset cursor)
 2) Filters noise (tool output, injected `<relevant-memories>`, logs, boilerplate)

@@ -1,0 +1,20 @@
+[Unit]
+Description=OpenClaw Lesson Extract Worker (Gemini Map-Reduce -> LanceDB Pro)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/clawd
+EnvironmentFile=%h/.config/lesson-extract-worker.env
+Environment=NODE_ENV=production
+Environment=LESSON_QUEUE_ROOT=/home/ubuntu/clawd/workspaces/main/tasks/lesson-extract
+Environment=GEMINI_MODEL=gemini-3-flash-preview
+ExecStart=/usr/bin/env node /home/ubuntu/clawd/scripts/lesson-extract-worker.mjs
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

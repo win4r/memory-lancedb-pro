@@ -365,7 +365,20 @@ OpenClaw 会把每个 Agent 的完整会话自动落盘为 JSONL：
 
 但 JSONL 含大量噪声（tool 输出、系统块、重复回调等），**不建议直接把原文塞进 LanceDB**。
 
-本插件提供一个安全的 extractor 脚本 `scripts/jsonl_distill.py`，配合 OpenClaw 的 `cron` + 独立 distiller agent，实现“增量蒸馏 → 高质量记忆入库”：
+**推荐方案（2026-02+）**：使用 **/new 非阻塞沉淀管线**（Hooks + systemd worker），在你执行 `/new` 时异步提取高价值经验并写入 LanceDB Pro：
+
+- 触发：`command:new`（你在聊天里发送 `/new`）
+- Hook：只投递一个很小的 task.json（毫秒级，不调用 LLM，不阻塞 `/new`）
+- Worker：systemd 常驻进程监听队列，读取 session `.jsonl`，用 Gemini **Map-Reduce** 抽取 0～20 条高信噪比记忆
+- 写入：通过 `openclaw memory-pro import` 写入 LanceDB Pro（插件内部仍会 embedding + 查重）
+- 通知：可选（可做到即使 0 条也通知）
+
+示例文件：
+- `examples/new-session-distill/`
+
+---
+
+Legacy 方案：本插件也提供一个安全的 extractor 脚本 `scripts/jsonl_distill.py`，配合 OpenClaw 的 `cron` + 独立 distiller agent，实现“增量蒸馏 → 高质量记忆入库”：（适合不依赖 `/new` 的全自动场景）
 
 - 只读取每个 JSONL 文件**新增尾巴**（byte offset cursor），避免重复和 token 浪费
 - 生成一个小型 batch JSON
