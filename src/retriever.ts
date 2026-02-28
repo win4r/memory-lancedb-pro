@@ -182,26 +182,56 @@ function parseRerankResponse(
   provider: RerankProvider,
   data: Record<string, unknown>,
 ): RerankItem[] | null {
+  const parseItems = (
+    items: unknown,
+    scoreKeys: Array<"score" | "relevance_score">,
+  ): RerankItem[] | null => {
+    if (!Array.isArray(items)) return null;
+    const parsed: RerankItem[] = [];
+    for (const raw of items as Array<Record<string, unknown>>) {
+      const index = typeof raw?.index === "number" ? raw.index : Number(raw?.index);
+      if (!Number.isFinite(index)) continue;
+      let score: number | null = null;
+      for (const key of scoreKeys) {
+        const value = raw?.[key];
+        const n = typeof value === "number" ? value : Number(value);
+        if (Number.isFinite(n)) {
+          score = n;
+          break;
+        }
+      }
+      if (score === null) continue;
+      parsed.push({ index, score });
+    }
+    return parsed.length > 0 ? parsed : null;
+  };
+
   switch (provider) {
     case "pinecone": {
-      // Pinecone: { data: [{ index, score, document }] }
-      const items = data.data as Array<{ index: number; score: number }> | undefined;
-      if (!Array.isArray(items)) return null;
-      return items.map(r => ({ index: r.index, score: r.score }));
+      // Pinecone: usually { data: [{ index, score, ... }] }
+      // Also tolerate results[] with score/relevance_score for robustness.
+      return (
+        parseItems(data.data, ["score", "relevance_score"]) ??
+        parseItems(data.results, ["score", "relevance_score"])
+      );
     }
     case "voyage": {
-      // Voyage: { data: [{ index, relevance_score }] }
-      const items = data.data as Array<{ index: number; relevance_score: number }> | undefined;
-      if (!Array.isArray(items)) return null;
-      return items.map(r => ({ index: r.index, score: r.relevance_score }));
+      // Voyage: usually { data: [{ index, relevance_score }] }
+      // Also tolerate results[] for compatibility across gateways.
+      return (
+        parseItems(data.data, ["relevance_score", "score"]) ??
+        parseItems(data.results, ["relevance_score", "score"])
+      );
     }
     case "siliconflow":
     case "jina":
     default: {
-      // Jina / SiliconFlow: { results: [{ index, relevance_score }] }
-      const items = data.results as Array<{ index: number; relevance_score: number }> | undefined;
-      if (!Array.isArray(items)) return null;
-      return items.map(r => ({ index: r.index, score: r.relevance_score }));
+      // Jina / SiliconFlow: usually { results: [{ index, relevance_score }] }
+      // Also tolerate data[] for compatibility across gateways.
+      return (
+        parseItems(data.results, ["relevance_score", "score"]) ??
+        parseItems(data.data, ["relevance_score", "score"])
+      );
     }
   }
 }
