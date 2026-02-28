@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.12
+
+- Fix: ghost memories stuck in autoRecall after deletion (#15). BM25-only results from stale FTS index are now validated via `store.hasId()` before inclusion in fused results. Removed the BM25-only floor score of 0.5 that allowed deleted entries to survive `hardMinScore` filtering.
+- Fix: HEARTBEAT pattern now matches anywhere in the prompt (not just at start), preventing autoRecall from triggering on prefixed HEARTBEAT messages.
+- Add: `autoRecallMinLength` config option to set a custom minimum prompt length for autoRecall (default: 15 chars English, 6 CJK). Prompts shorter than this threshold are skipped.
+- Add: `ping`, `pong`, `test`, `debug` added to skip patterns in adaptive retrieval.
+
 ## 1.0.11
 
 - Change: set `autoRecall` default to `false` to avoid the model echoing injected `<relevant-memories>` blocks.

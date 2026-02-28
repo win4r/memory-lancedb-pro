@@ -37,6 +37,7 @@ interface PluginConfig {
   dbPath?: string;
   autoCapture?: boolean;
   autoRecall?: boolean;
+  autoRecallMinLength?: number;
   captureAssistant?: boolean;
   retrieval?: {
     mode?: "hybrid" | "vector";
@@ -200,7 +201,7 @@ async function readSessionMessages(filePath: string, messageCount: number): Prom
             }
           }
         }
-      } catch {}
+      } catch { }
     }
 
     if (messages.length === 0) return null;
@@ -225,7 +226,7 @@ async function readSessionContentWithResetFallback(sessionFilePath: string, mess
       const latestResetPath = join(dir, resetCandidates[resetCandidates.length - 1]);
       return await readSessionMessages(latestResetPath, messageCount);
     }
-  } catch {}
+  } catch { }
 
   return primary;
 }
@@ -264,7 +265,7 @@ async function findPreviousSessionFile(sessionsDir: string, currentSessionFile?:
         .sort().reverse();
       if (nonReset.length > 0) return join(sessionsDir, nonReset[0]);
     }
-  } catch {}
+  } catch { }
 }
 
 // ============================================================================
@@ -367,7 +368,7 @@ const memoryLanceDBProPlugin = {
     // Default is OFF to prevent the model from accidentally echoing injected context.
     if (config.autoRecall === true) {
       api.on("before_agent_start", async (event, ctx) => {
-        if (!event.prompt || shouldSkipRetrieval(event.prompt)) {
+        if (!event.prompt || shouldSkipRetrieval(event.prompt, config.autoRecallMinLength)) {
           return;
         }
 
@@ -623,7 +624,7 @@ const memoryLanceDBProPlugin = {
         if (files.length > 7) {
           const { unlink } = await import("node:fs/promises");
           for (const old of files.slice(0, files.length - 7)) {
-            await unlink(join(backupDir, old)).catch(() => {});
+            await unlink(join(backupDir, old)).catch(() => { });
           }
         }
 
@@ -664,10 +665,10 @@ const memoryLanceDBProPlugin = {
 
             api.logger.info(
               `memory-lancedb-pro: initialized successfully ` +
-                `(embedding: ${embedTest.success ? "OK" : "FAIL"}, ` +
-                `retrieval: ${retrievalTest.success ? "OK" : "FAIL"}, ` +
-                `mode: ${retrievalTest.mode}, ` +
-                `FTS: ${retrievalTest.hasFtsSupport ? "enabled" : "disabled"})`
+              `(embedding: ${embedTest.success ? "OK" : "FAIL"}, ` +
+              `retrieval: ${retrievalTest.success ? "OK" : "FAIL"}, ` +
+              `mode: ${retrievalTest.mode}, ` +
+              `FTS: ${retrievalTest.hasFtsSupport ? "enabled" : "disabled"})`
             );
 
             if (!embedTest.success) {
@@ -701,54 +702,55 @@ const memoryLanceDBProPlugin = {
 };
 
 function parsePluginConfig(value: unknown): PluginConfig {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      throw new Error("memory-lancedb-pro config required");
-    }
-    const cfg = value as Record<string, unknown>;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("memory-lancedb-pro config required");
+  }
+  const cfg = value as Record<string, unknown>;
 
-    const embedding = cfg.embedding as Record<string, unknown> | undefined;
-    if (!embedding) {
-      throw new Error("embedding config is required");
-    }
+  const embedding = cfg.embedding as Record<string, unknown> | undefined;
+  if (!embedding) {
+    throw new Error("embedding config is required");
+  }
 
-    const apiKey = typeof embedding.apiKey === "string"
-      ? embedding.apiKey
-      : process.env.OPENAI_API_KEY || "";
+  const apiKey = typeof embedding.apiKey === "string"
+    ? embedding.apiKey
+    : process.env.OPENAI_API_KEY || "";
 
-    if (!apiKey) {
-      throw new Error("embedding.apiKey is required (set directly or via OPENAI_API_KEY env var)");
-    }
+  if (!apiKey) {
+    throw new Error("embedding.apiKey is required (set directly or via OPENAI_API_KEY env var)");
+  }
 
-    return {
-      embedding: {
-        provider: "openai-compatible",
-        apiKey,
-        model: typeof embedding.model === "string" ? embedding.model : "text-embedding-3-small",
-        baseURL: typeof embedding.baseURL === "string" ? resolveEnvVars(embedding.baseURL) : undefined,
-        // Accept number, numeric string, or env-var string (e.g. "${EMBED_DIM}").
-        // Also accept legacy top-level `dimensions` for convenience.
-        dimensions: parsePositiveInt(embedding.dimensions ?? cfg.dimensions),
-        taskQuery: typeof embedding.taskQuery === "string" ? embedding.taskQuery : undefined,
-        taskPassage: typeof embedding.taskPassage === "string" ? embedding.taskPassage : undefined,
-        normalized: typeof embedding.normalized === "boolean" ? embedding.normalized : undefined,
-      },
-      dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : undefined,
-      autoCapture: cfg.autoCapture !== false,
-      // Default OFF: only enable when explicitly set to true.
-      autoRecall: cfg.autoRecall === true,
-      captureAssistant: cfg.captureAssistant === true,
-      retrieval: typeof cfg.retrieval === "object" && cfg.retrieval !== null ? cfg.retrieval as any : undefined,
-      scopes: typeof cfg.scopes === "object" && cfg.scopes !== null ? cfg.scopes as any : undefined,
-      enableManagementTools: cfg.enableManagementTools === true,
-      sessionMemory: typeof cfg.sessionMemory === "object" && cfg.sessionMemory !== null
-        ? {
-            enabled: (cfg.sessionMemory as Record<string, unknown>).enabled !== false,
-            messageCount: typeof (cfg.sessionMemory as Record<string, unknown>).messageCount === "number"
-              ? (cfg.sessionMemory as Record<string, unknown>).messageCount as number
-              : undefined,
-          }
-        : undefined,
-    };
+  return {
+    embedding: {
+      provider: "openai-compatible",
+      apiKey,
+      model: typeof embedding.model === "string" ? embedding.model : "text-embedding-3-small",
+      baseURL: typeof embedding.baseURL === "string" ? resolveEnvVars(embedding.baseURL) : undefined,
+      // Accept number, numeric string, or env-var string (e.g. "${EMBED_DIM}").
+      // Also accept legacy top-level `dimensions` for convenience.
+      dimensions: parsePositiveInt(embedding.dimensions ?? cfg.dimensions),
+      taskQuery: typeof embedding.taskQuery === "string" ? embedding.taskQuery : undefined,
+      taskPassage: typeof embedding.taskPassage === "string" ? embedding.taskPassage : undefined,
+      normalized: typeof embedding.normalized === "boolean" ? embedding.normalized : undefined,
+    },
+    dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : undefined,
+    autoCapture: cfg.autoCapture !== false,
+    // Default OFF: only enable when explicitly set to true.
+    autoRecall: cfg.autoRecall === true,
+    autoRecallMinLength: parsePositiveInt(cfg.autoRecallMinLength),
+    captureAssistant: cfg.captureAssistant === true,
+    retrieval: typeof cfg.retrieval === "object" && cfg.retrieval !== null ? cfg.retrieval as any : undefined,
+    scopes: typeof cfg.scopes === "object" && cfg.scopes !== null ? cfg.scopes as any : undefined,
+    enableManagementTools: cfg.enableManagementTools === true,
+    sessionMemory: typeof cfg.sessionMemory === "object" && cfg.sessionMemory !== null
+      ? {
+        enabled: (cfg.sessionMemory as Record<string, unknown>).enabled !== false,
+        messageCount: typeof (cfg.sessionMemory as Record<string, unknown>).messageCount === "number"
+          ? (cfg.sessionMemory as Record<string, unknown>).messageCount as number
+          : undefined,
+      }
+      : undefined,
+  };
 }
 
 export default memoryLanceDBProPlugin;

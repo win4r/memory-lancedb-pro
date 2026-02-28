@@ -2,7 +2,7 @@
   "id": "memory-lancedb-pro",
   "name": "Memory (LanceDB Pro)",
   "description": "Enhanced LanceDB-backed long-term memory with hybrid retrieval, multi-scope isolation, and management CLI",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "kind": "memory",
   "configSchema": {
     "type": "object",
@@ -60,6 +60,13 @@
       "autoRecall": {
         "type": "boolean",
         "default": false
+      },
+      "autoRecallMinLength": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+        "default": 15,
+        "description": "Minimum prompt length (in characters) to trigger auto-recall. Prompts shorter than this are skipped. Default: 15 for English, 6 for CJK."
       },
       "captureAssistant": {
         "type": "boolean"
@@ -265,6 +272,11 @@
     "autoRecall": {
       "label": "Auto-Recall",
       "help": "Automatically inject relevant memories into context"
+    },
+    "autoRecallMinLength": {
+      "label": "Auto-Recall Min Length",
+      "help": "Minimum prompt length to trigger auto-recall (shorter prompts are skipped). Default: 15 chars for English, 6 for CJK.",
+      "advanced": true
     },
     "captureAssistant": {
       "label": "Capture Assistant Messages",

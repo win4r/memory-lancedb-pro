@@ -18,9 +18,11 @@ const SKIP_PATTERNS = [
   /^(go ahead|continue|proceed|do it|start|begin|next|实施|开始|继续|好的|可以|行)\s*[.!]?$/i,
   // Pure emoji
   /^[\p{Emoji}\s]+$/u,
-  // Heartbeat/system
-  /^HEARTBEAT/i,
+  // Heartbeat/system (match anywhere, not just at start, to handle prefixed formats)
+  /HEARTBEAT/i,
   /^\[System/i,
+  // Single-word utility pings
+  /^(ping|pong|test|debug)\s*[.!?]?$/i,
 ];
 
 // Queries that SHOULD trigger retrieval even if short
@@ -61,8 +63,10 @@ function normalizeQuery(query: string): string {
 /**
  * Determine if a query should skip memory retrieval.
  * Returns true if retrieval should be skipped.
+ * @param query The raw prompt text
+ * @param minLength Optional minimum length override (if set, overrides built-in thresholds)
  */
-export function shouldSkipRetrieval(query: string): boolean {
+export function shouldSkipRetrieval(query: string, minLength?: number): boolean {
   const trimmed = normalizeQuery(query);
 
   // Force retrieve if query has memory-related intent (checked FIRST,
@@ -75,11 +79,17 @@ export function shouldSkipRetrieval(query: string): boolean {
   // Skip if matches any skip pattern
   if (SKIP_PATTERNS.some(p => p.test(trimmed))) return true;
 
+  // If caller provides a custom minimum length, use it
+  if (minLength !== undefined && minLength > 0) {
+    if (trimmed.length < minLength && !trimmed.includes('?') && !trimmed.includes('？')) return true;
+    return false;
+  }
+
   // Skip very short non-question messages (likely commands or affirmations)
   // CJK characters carry more meaning per character, so use a lower threshold
   const hasCJK = /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/.test(trimmed);
-  const minLength = hasCJK ? 6 : 15;
-  if (trimmed.length < minLength && !trimmed.includes('?') && !trimmed.includes('？')) return true;
+  const defaultMinLength = hasCJK ? 6 : 15;
+  if (trimmed.length < defaultMinLength && !trimmed.includes('?') && !trimmed.includes('？')) return true;
 
   // Default: do retrieve
   return false;

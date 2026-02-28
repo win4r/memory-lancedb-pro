@@ -282,8 +282,8 @@ export class MemoryRetriever {
       this.runBM25Search(query, candidatePoolSize, scopeFilter, category),
     ]);
 
-    // Fuse results using RRF
-    const fusedResults = this.fuseResults(vectorResults, bm25Results);
+    // Fuse results using RRF (async: validates BM25-only entries exist in store)
+    const fusedResults = await this.fuseResults(vectorResults, bm25Results);
 
     // Apply minimum score threshold
     const filtered = fusedResults.filter(r => r.score >= this.config.minScore);
@@ -357,10 +357,10 @@ export class MemoryRetriever {
     }));
   }
 
-  private fuseResults(
+  private async fuseResults(
     vectorResults: Array<MemorySearchResult & { rank: number }>,
     bm25Results: Array<MemorySearchResult & { rank: number }>
-  ): RetrievalResult[] {
+  ): Promise<RetrievalResult[]> {
     // Create maps for quick lookup
     const vectorMap = new Map<string, MemorySearchResult & { rank: number }>();
     const bm25Map = new Map<string, MemorySearchResult & { rank: number }>();
@@ -383,6 +383,18 @@ export class MemoryRetriever {
       const vectorResult = vectorMap.get(id);
       const bm25Result = bm25Map.get(id);
 
+      // FIX(#15): BM25-only results may be "ghost" entries whose vector data was
+      // deleted but whose FTS index entry lingers until the next index rebuild.
+      // Validate that the entry actually exists in the store before including it.
+      if (!vectorResult && bm25Result) {
+        try {
+          const exists = await this.store.hasId(id);
+          if (!exists) continue; // Skip ghost entry
+        } catch {
+          // If hasId fails, keep the result (fail-open)
+        }
+      }
+
       // Use the result with more complete data (prefer vector result if both exist)
       const baseResult = vectorResult || bm25Result!;
 
@@ -392,12 +404,12 @@ export class MemoryRetriever {
       const bm25Hit = bm25Result ? 1 : 0;
 
       // Base = vector score; BM25 hit boosts by up to 15%
-      // BM25-only results use their normalized score (floor 0.5) so exact keyword
-      // matches aren't buried — e.g. searching "JINA_API_KEY" should surface even
-      // when vector distance is large.
+      // BM25-only results use their raw BM25 score so exact keyword matches
+      // (e.g. searching "JINA_API_KEY") still surface. The previous floor of 0.5
+      // was too generous and allowed ghost entries to survive hardMinScore (0.35).
       const fusedScore = vectorResult
         ? clamp01(vectorScore + (bm25Hit * 0.15 * vectorScore), 0.1)
-        : clamp01(Math.max(bm25Result!.score, 0.5), 0.1);
+        : clamp01(bm25Result!.score, 0.1);
 
       fusedResults.push({
         entry: baseResult.entry,
