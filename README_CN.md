@@ -371,6 +371,7 @@ OpenClaw 会把每个 Agent 的完整会话自动落盘为 JSONL：
 - Hook：只投递一个很小的 task.json（毫秒级，不调用 LLM，不阻塞 `/new`）
 - Worker：systemd 常驻进程监听队列，读取 session `.jsonl`，用 Gemini **Map-Reduce** 抽取 0～20 条高信噪比记忆
 - 写入：通过 `openclaw memory-pro import` 写入 LanceDB Pro（插件内部仍会 embedding + 查重）
+- 中文关键词：每条记忆包含 `Keywords (zh)`，并遵循三要素（实体/动作/症状）。其中“实体关键词”必须从 transcript 原文逐字拷贝（禁止编造项目名）。
 - 通知：可选（可做到即使 0 条也通知）
 
 示例文件：

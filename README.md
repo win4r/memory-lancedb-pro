@@ -416,6 +416,7 @@ Instead, **recommended (2026-02+)** is a **non-blocking `/new` pipeline**:
 - Hook: enqueue a tiny JSON task file (fast; no LLM calls inside the hook)
 - Worker: a user-level systemd service watches the inbox and runs **Gemini Map-Reduce** on the session JSONL transcript
 - Store: writes **0–20** high-signal, atomic lessons into LanceDB Pro via `openclaw memory-pro import`
+- Keywords: each memory includes `Keywords (zh)` with a simple taxonomy (Entity + Action + Symptom). Entity keywords must be copied verbatim from the transcript (no hallucinated project names).
 - Notify: optional Telegram/Discord notification (even if 0 lessons)
 
 See the self-contained example files in:
