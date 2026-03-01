@@ -15,7 +15,7 @@ const SKIP_PATTERNS = [
   // Simple affirmations/negations
   /^(yes|no|yep|nope|ok|okay|sure|fine|thanks|thank you|thx|ty|got it|understood|cool|nice|great|good|perfect|awesome|👍|👎|✅|❌)\s*[.!]?$/i,
   // Continuation prompts
-  /^(go ahead|continue|proceed|do it|start|begin|next|实施|开始|继续|好的|可以|行)\s*[.!]?$/i,
+  /^(go ahead|continue|proceed|do it|start|begin|next|实施|實施|开始|開始|继续|繼續|好的|可以|行)\s*[.!]?$/i,
   // Pure emoji
   /^[\p{Emoji}\s]+$/u,
   // Heartbeat/system (match anywhere, not just at start, to handle prefixed formats)
@@ -31,7 +31,7 @@ const FORCE_RETRIEVE_PATTERNS = [
   /\b(last time|before|previously|earlier|yesterday|ago)\b/i,
   /\b(my (name|email|phone|address|birthday|preference))\b/i,
   /\b(what did (i|we)|did i (tell|say|mention))\b/i,
-  /(你记得|之前|上次|以前|还记得|提到过|说过)/i,
+  /(你记得|[你妳]記得|之前|上次|以前|还记得|還記得|提到过|提到過|说过|說過)/i,
 ];
 
 /**
