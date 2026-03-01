@@ -698,6 +698,16 @@ LanceDB table `memories`:
 
 ---
 
+## Troubleshooting
+
+### "Cannot mix BigInt and other types" (LanceDB / Apache Arrow)
+
+On LanceDB 0.26+ (via Apache Arrow), some numeric columns may be returned as `BigInt` at runtime (commonly: `timestamp`, `importance`, `_distance`, `_score`). If you see errors like:
+
+- `TypeError: Cannot mix BigInt and other types, use explicit conversions`
+
+upgrade to **memory-lancedb-pro >= 1.0.14**. This plugin now coerces these values using `Number(...)` before doing arithmetic (for example, when computing scores or sorting by timestamp).
+
 ## Dependencies
 
 | Package | Purpose |

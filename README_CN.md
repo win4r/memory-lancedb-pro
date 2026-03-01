@@ -573,6 +573,16 @@ LanceDB 表 `memories`：
 
 ---
 
+## 常见问题 / 排错
+
+### "Cannot mix BigInt and other types"（LanceDB / Apache Arrow）
+
+在 LanceDB 0.26+（底层 Apache Arrow）中，部分数值列在运行时可能会以 `BigInt` 的形式返回（常见：`timestamp`、`importance`、`_distance`、`_score`）。如果你遇到类似报错：
+
+- `TypeError: Cannot mix BigInt and other types, use explicit conversions`
+
+请升级到 **memory-lancedb-pro >= 1.0.14**。插件已对这些字段统一做 `Number(...)` 转换后再参与运算（例如：计算分数、按时间排序）。
+
 ## 依赖
 
 | 包 | 用途 |
