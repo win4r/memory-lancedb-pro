@@ -490,8 +490,8 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
               vector,
               category: (row.category as any) || "other",
               scope: (row.scope as string | undefined) || "global",
-              importance: typeof row.importance === "number" ? row.importance : 0.7,
-              timestamp: typeof row.timestamp === "number" ? row.timestamp : Date.now(),
+              importance: (row.importance != null) ? Number(row.importance) : 0.7,
+              timestamp: (row.timestamp != null) ? Number(row.timestamp) : Date.now(),
               metadata: typeof row.metadata === "string" ? row.metadata : "{}",
             };
 

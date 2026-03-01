@@ -258,7 +258,7 @@ export class MemoryStore {
     const mapped: MemorySearchResult[] = [];
 
     for (const row of results) {
-      const distance = row._distance ?? 0;
+      const distance = Number(row._distance ?? 0);
       const score = 1 / (1 + distance);
 
       if (score < minScore) continue;
@@ -277,8 +277,8 @@ export class MemoryStore {
           vector: row.vector as number[],
           category: row.category as MemoryEntry["category"],
           scope: rowScope,
-          importance: row.importance as number,
-          timestamp: row.timestamp as number,
+          importance: Number(row.importance),
+          timestamp: Number(row.timestamp),
           metadata: (row.metadata as string) || "{}",
         },
         score,
@@ -323,7 +323,8 @@ export class MemoryStore {
         }
 
         // LanceDB FTS _score is raw BM25 (unbounded). Normalize with sigmoid.
-        const rawScore = typeof row._score === "number" ? row._score : 0;
+        // LanceDB may return BigInt for numeric columns; coerce safely.
+        const rawScore = (row._score != null) ? Number(row._score) : 0;
         const normalizedScore = rawScore > 0 ? 1 / (1 + Math.exp(-rawScore / 5)) : 0.5;
 
         mapped.push({
@@ -333,8 +334,8 @@ export class MemoryStore {
             vector: row.vector as number[],
             category: row.category as MemoryEntry["category"],
             scope: rowScope,
-            importance: row.importance as number,
-            timestamp: row.timestamp as number,
+            importance: Number(row.importance),
+            timestamp: Number(row.timestamp),
             metadata: (row.metadata as string) || "{}",
           },
           score: normalizedScore,
@@ -423,8 +424,8 @@ export class MemoryStore {
         vector: [], // Don't include vectors in list results for performance
         category: row.category as MemoryEntry["category"],
         scope: (row.scope as string | undefined) ?? "global",
-        importance: row.importance as number,
-        timestamp: row.timestamp as number,
+        importance: Number(row.importance),
+        timestamp: Number(row.timestamp),
         metadata: (row.metadata as string) || "{}",
       }))
       .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
@@ -514,8 +515,8 @@ export class MemoryStore {
       vector: updates.vector ?? (Array.from(row.vector as Iterable<number>)),
       category: updates.category ?? (row.category as MemoryEntry["category"]),
       scope: rowScope,
-      importance: updates.importance ?? (row.importance as number),
-      timestamp: row.timestamp as number, // preserve original
+      importance: updates.importance ?? Number(row.importance),
+      timestamp: Number(row.timestamp), // preserve original
       metadata: updates.metadata ?? ((row.metadata as string) || "{}"),
     };
 

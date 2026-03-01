@@ -153,9 +153,9 @@ export class MemoryMigrator {
         id: row.id as string,
         text: row.text as string,
         vector: row.vector as number[],
-        importance: row.importance as number,
+        importance: Number(row.importance),
         category: (row.category as LegacyMemoryEntry["category"]) || "other",
-        createdAt: row.createdAt as number,
+        createdAt: Number(row.createdAt),
         scope: row.scope as string | undefined,
       }));
     } catch (error) {
