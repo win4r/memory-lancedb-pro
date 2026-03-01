@@ -49,6 +49,9 @@ function normalizeQuery(query: string): string {
   // Strip OpenClaw cron wrapper prefix.
   s = s.replace(/^\[cron:[^\]]+\]\s*/i, "");
 
+  // Strip OpenClaw timestamp prefix [Mon 2026-03-02 04:21 GMT+8].
+  s = s.replace(/^\[[A-Za-z]{3}\s\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}\s[^\]]+\]\s*/, "");
+
   // Strip OpenClaw injected metadata header used in some transcripts.
   if (/^Conversation info \(untrusted metadata\):/i.test(s)) {
     s = s.replace(/^Conversation info \(untrusted metadata\):\s*/i, "");
