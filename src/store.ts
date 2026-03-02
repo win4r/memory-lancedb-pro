@@ -74,26 +74,29 @@ function escapeSqlLiteral(value: string): string {
 export function validateStoragePath(dbPath: string): string {
   let resolvedPath = dbPath;
 
-  // Resolve symlinks if the path already exists
+  // Resolve symlinks (including dangling symlinks)
   try {
-    if (existsSync(dbPath)) {
-      const stats = lstatSync(dbPath);
-      if (stats.isSymbolicLink()) {
-        try {
-          resolvedPath = realpathSync(dbPath);
-        } catch (err: any) {
-          throw new Error(
-            `dbPath "${dbPath}" is a symlink whose target does not exist.\n` +
-            `  Fix: Create the target directory, or update the symlink to point to a valid path.\n` +
-            `  Details: ${err.code || ""} ${err.message}`
-          );
-        }
+    const stats = lstatSync(dbPath);
+    if (stats.isSymbolicLink()) {
+      try {
+        resolvedPath = realpathSync(dbPath);
+      } catch (err: any) {
+        throw new Error(
+          `dbPath "${dbPath}" is a symlink whose target does not exist.\n` +
+          `  Fix: Create the target directory, or update the symlink to point to a valid path.\n` +
+          `  Details: ${err.code || ""} ${err.message}`
+        );
       }
     }
   } catch (err: any) {
-    // Re-throw our own descriptive errors
-    if (err.message.includes("symlink")) throw err;
-    // Other lstat failures — continue with original path
+    // Missing path is OK (it will be created below)
+    if (err?.code === "ENOENT") {
+      // no-op
+    } else if (typeof err?.message === "string" && err.message.includes("symlink whose target does not exist")) {
+      throw err;
+    } else {
+      // Other lstat failures — continue with original path
+    }
   }
 
   // Create directory if it doesn't exist
