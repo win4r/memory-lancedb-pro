@@ -1,6 +1,18 @@
 # Changelog
 
 
+## 1.0.22
+
+**Storage Path Validation & Better Error Messages**
+
+- **Fix**: Validate `dbPath` at startup — resolve symlinks, auto-create missing directories, check write permissions (#26, #27)
+- **Fix**: Write/connection failures now include `errno`, resolved path, and actionable fix suggestions instead of generic errors (#28)
+- **New**: Exported `validateStoragePath()` utility for external tooling and diagnostics
+
+Breaking changes: None. Backward compatible.
+
+---
+
 ## 1.0.21
 
 **Long Context Chunking**

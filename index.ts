@@ -10,7 +10,7 @@ import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 
 // Import core components
-import { MemoryStore } from "./src/store.js";
+import { MemoryStore, validateStoragePath } from "./src/store.js";
 import { createEmbedder, getVectorDimensions } from "./src/embedder.js";
 import { createRetriever, DEFAULT_RETRIEVAL_CONFIG } from "./src/retriever.js";
 import { createScopeManager } from "./src/scopes.js";
@@ -315,6 +315,18 @@ const memoryLanceDBProPlugin = {
     const config = parsePluginConfig(api.pluginConfig);
 
     const resolvedDbPath = api.resolvePath(config.dbPath || getDefaultDbPath());
+
+    // Pre-flight: validate storage path (symlink resolution, mkdir, write check).
+    // Runs synchronously and logs warnings; does NOT block gateway startup.
+    try {
+      validateStoragePath(resolvedDbPath);
+    } catch (err) {
+      api.logger.warn(
+        `memory-lancedb-pro: storage path issue — ${String(err)}\n` +
+        `  The plugin will still attempt to start, but writes may fail.`
+      );
+    }
+
     const vectorDim = getVectorDimensions(
       config.embedding.model || "text-embedding-3-small",
       config.embedding.dimensions

@@ -4,6 +4,8 @@
 
 import type * as LanceDB from "@lancedb/lancedb";
 import { randomUUID } from "node:crypto";
+import { existsSync, accessSync, constants, mkdirSync, realpathSync, lstatSync } from "node:fs";
+import { dirname } from "node:path";
 
 // ============================================================================
 // Types
@@ -61,6 +63,69 @@ function escapeSqlLiteral(value: string): string {
 }
 
 // ============================================================================
+// Storage Path Validation
+// ============================================================================
+
+/**
+ * Validate and prepare the storage directory before LanceDB connection.
+ * Resolves symlinks, creates missing directories, and checks write permissions.
+ * Returns the resolved absolute path on success, or throws a descriptive error.
+ */
+export function validateStoragePath(dbPath: string): string {
+  let resolvedPath = dbPath;
+
+  // Resolve symlinks if the path already exists
+  try {
+    if (existsSync(dbPath)) {
+      const stats = lstatSync(dbPath);
+      if (stats.isSymbolicLink()) {
+        try {
+          resolvedPath = realpathSync(dbPath);
+        } catch (err: any) {
+          throw new Error(
+            `dbPath "${dbPath}" is a symlink whose target does not exist.\n` +
+            `  Fix: Create the target directory, or update the symlink to point to a valid path.\n` +
+            `  Details: ${err.code || ""} ${err.message}`
+          );
+        }
+      }
+    }
+  } catch (err: any) {
+    // Re-throw our own descriptive errors
+    if (err.message.includes("symlink")) throw err;
+    // Other lstat failures — continue with original path
+  }
+
+  // Create directory if it doesn't exist
+  if (!existsSync(resolvedPath)) {
+    try {
+      mkdirSync(resolvedPath, { recursive: true });
+    } catch (err: any) {
+      throw new Error(
+        `Failed to create dbPath directory "${resolvedPath}".\n` +
+        `  Fix: Ensure the parent directory "${dirname(resolvedPath)}" exists and is writable,\n` +
+        `       or create it manually: mkdir -p "${resolvedPath}"\n` +
+        `  Details: ${err.code || ""} ${err.message}`
+      );
+    }
+  }
+
+  // Check write permissions
+  try {
+    accessSync(resolvedPath, constants.W_OK);
+  } catch (err: any) {
+    throw new Error(
+      `dbPath directory "${resolvedPath}" is not writable.\n` +
+      `  Fix: Check permissions with: ls -la "${dirname(resolvedPath)}"\n` +
+      `       Or grant write access: chmod u+w "${resolvedPath}"\n` +
+      `  Details: ${err.code || ""} ${err.message}`
+    );
+  }
+
+  return resolvedPath;
+}
+
+// ============================================================================
 // Memory Store
 // ============================================================================
 
@@ -95,7 +160,19 @@ export class MemoryStore {
 
   private async doInitialize(): Promise<void> {
     const lancedb = await loadLanceDB();
-    const db = await lancedb.connect(this.config.dbPath);
+
+    let db: LanceDB.Connection;
+    try {
+      db = await lancedb.connect(this.config.dbPath);
+    } catch (err: any) {
+      const code = err.code || "";
+      const message = err.message || String(err);
+      throw new Error(
+        `Failed to open LanceDB at "${this.config.dbPath}": ${code} ${message}\n` +
+        `  Fix: Verify the path exists and is writable. Check parent directory permissions.`
+      );
+    }
+
     let table: LanceDB.Table;
 
     // Idempotent table init: try openTable first, create only if missing,
@@ -196,7 +273,15 @@ export class MemoryStore {
       metadata: entry.metadata || "{}",
     };
 
-    await this.table!.add([fullEntry]);
+    try {
+      await this.table!.add([fullEntry]);
+    } catch (err: any) {
+      const code = err.code || "";
+      const message = err.message || String(err);
+      throw new Error(
+        `Failed to store memory in "${this.config.dbPath}": ${code} ${message}`
+      );
+    }
     return fullEntry;
   }
 
