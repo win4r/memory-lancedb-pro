@@ -336,7 +336,7 @@ const memoryLanceDBProPlugin = {
     const store = new MemoryStore({ dbPath: resolvedDbPath, vectorDim });
     const embedder = createEmbedder({
       provider: "openai-compatible",
-      apiKey: resolveEnvVars(config.embedding.apiKey),
+      apiKey: config.embedding.apiKey,
       model: config.embedding.model || "text-embedding-3-small",
       baseURL: config.embedding.baseURL,
       dimensions: config.embedding.dimensions,
@@ -742,11 +742,14 @@ function parsePluginConfig(value: unknown): PluginConfig {
     throw new Error("embedding config is required");
   }
 
-  const apiKey = typeof embedding.apiKey === "string"
+  // Accept single key (string) or array of keys for round-robin rotation
+  const apiKey: string | string[] = typeof embedding.apiKey === "string"
     ? embedding.apiKey
-    : process.env.OPENAI_API_KEY || "";
+    : Array.isArray(embedding.apiKey) && embedding.apiKey.length > 0 && embedding.apiKey.every((k: unknown) => typeof k === "string")
+      ? (embedding.apiKey as string[])
+      : process.env.OPENAI_API_KEY || "";
 
-  if (!apiKey) {
+  if (!apiKey || (Array.isArray(apiKey) && apiKey.length === 0)) {
     throw new Error("embedding.apiKey is required (set directly or via OPENAI_API_KEY env var)");
   }
 

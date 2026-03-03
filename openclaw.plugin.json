@@ -2,7 +2,7 @@
   "id": "memory-lancedb-pro",
   "name": "Memory (LanceDB Pro)",
   "description": "Enhanced LanceDB-backed long-term memory with hybrid retrieval, multi-scope isolation, long-context chunking, and management CLI",
-  "version": "1.0.21",
+  "version": "1.0.23",
   "kind": "memory",
   "configSchema": {
     "type": "object",
@@ -17,7 +17,11 @@
             "const": "openai-compatible"
           },
           "apiKey": {
-            "type": "string"
+            "oneOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            ],
+            "description": "Single API key or array of keys for round-robin rotation"
           },
           "model": {
             "type": "string"
@@ -243,10 +247,10 @@
   },
   "uiHints": {
     "embedding.apiKey": {
-      "label": "API Key",
+      "label": "API Key(s)",
       "sensitive": true,
-      "placeholder": "sk-proj-... or ${GEMINI_API_KEY} or 'ollama'",
-      "help": "API key for the embedding provider (or use ${OPENAI_API_KEY}; use a dummy value for keyless local endpoints)"
+      "placeholder": "sk-proj-... or [\"key1\", \"key2\"] for rotation",
+      "help": "Single API key or array of keys for round-robin rotation with automatic failover on rate limits (or use ${OPENAI_API_KEY}; use a dummy value for keyless local endpoints)"
     },
     "embedding.model": {
       "label": "Embedding Model",

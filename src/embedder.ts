@@ -85,7 +85,8 @@ class EmbeddingCache {
 
 export interface EmbeddingConfig {
   provider: "openai-compatible";
-  apiKey: string;
+  /** Single API key or array of keys for round-robin rotation with failover. */
+  apiKey: string | string[];
   model: string;
   baseURL?: string;
   dimensions?: number;
@@ -151,7 +152,11 @@ export function getVectorDimensions(model: string, overrideDims?: number): numbe
 // ============================================================================
 
 export class Embedder {
-  private client: OpenAI;
+  /** Pool of OpenAI clients — one per API key for round-robin rotation. */
+  private clients: OpenAI[];
+  /** Round-robin index for client rotation. */
+  private _clientIndex: number = 0;
+
   public readonly dimensions: number;
   private readonly _cache: EmbeddingCache;
 
@@ -166,8 +171,9 @@ export class Embedder {
   private readonly _autoChunk: boolean;
 
   constructor(config: EmbeddingConfig & { chunking?: boolean }) {
-    // Resolve environment variables in API key
-    const resolvedApiKey = resolveEnvVars(config.apiKey);
+    // Normalize apiKey to array and resolve environment variables
+    const apiKeys = Array.isArray(config.apiKey) ? config.apiKey : [config.apiKey];
+    const resolvedKeys = apiKeys.map(k => resolveEnvVars(k));
 
     this._model = config.model;
     this._taskQuery = config.taskQuery;
@@ -177,13 +183,72 @@ export class Embedder {
     // Enable auto-chunking by default for better handling of long documents
     this._autoChunk = config.chunking !== false;
 
-    this.client = new OpenAI({
-      apiKey: resolvedApiKey,
+    // Create a client pool — one OpenAI client per key
+    this.clients = resolvedKeys.map(key => new OpenAI({
+      apiKey: key,
       ...(config.baseURL ? { baseURL: config.baseURL } : {}),
-    });
+    }));
+
+    if (this.clients.length > 1) {
+      console.log(`[memory-lancedb-pro] Initialized ${this.clients.length} API keys for round-robin rotation`);
+    }
 
     this.dimensions = getVectorDimensions(config.model, config.dimensions);
     this._cache = new EmbeddingCache(256, 30); // 256 entries, 30 min TTL
+  }
+
+  // --------------------------------------------------------------------------
+  // Multi-key rotation helpers
+  // --------------------------------------------------------------------------
+
+  /** Return the next client in round-robin order. */
+  private nextClient(): OpenAI {
+    const client = this.clients[this._clientIndex % this.clients.length];
+    this._clientIndex = (this._clientIndex + 1) % this.clients.length;
+    return client;
+  }
+
+  /** Check whether an error is a rate-limit / quota-exceeded error. */
+  private isRateLimitError(error: unknown): boolean {
+    // OpenAI SDK typed error
+    if (error && typeof error === "object" && "status" in error && (error as any).status === 429) {
+      return true;
+    }
+    const msg = error instanceof Error ? error.message : String(error);
+    return /rate.limit|quota|too many requests|insufficient.*credit|429/i.test(msg);
+  }
+
+  /**
+   * Call embeddings.create with automatic key rotation on rate-limit errors.
+   * Tries each key in the pool at most once before giving up.
+   */
+  private async embedWithRetry(payload: any): Promise<any> {
+    const maxAttempts = this.clients.length;
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const client = this.nextClient();
+      try {
+        return await client.embeddings.create(payload);
+      } catch (error) {
+        if (this.isRateLimitError(error) && attempt < maxAttempts - 1) {
+          console.log(
+            `[memory-lancedb-pro] API key ${attempt + 1}/${maxAttempts} hit rate limit, rotating to next key...`
+          );
+          lastError = error instanceof Error ? error : new Error(String(error));
+          continue;
+        }
+        // Non-rate-limit error or last attempt — let caller handle
+        throw error;
+      }
+    }
+
+    throw lastError || new Error("All API keys exhausted (rate limited)");
+  }
+
+  /** Number of API keys in the rotation pool. */
+  get keyCount(): number {
+    return this.clients.length;
   }
 
   // --------------------------------------------------------------------------
@@ -271,7 +336,7 @@ export class Embedder {
     if (cached) return cached;
 
     try {
-      const response = await this.client.embeddings.create(this.buildPayload(text, task) as any);
+      const response = await this.embedWithRetry(this.buildPayload(text, task));
       const embedding = response.data[0]?.embedding as number[] | undefined;
       if (!embedding) {
         throw new Error("No embedding returned from provider");
@@ -361,8 +426,8 @@ export class Embedder {
     }
 
     try {
-      const response = await this.client.embeddings.create(
-        this.buildPayload(validTexts, task) as any
+      const response = await this.embedWithRetry(
+        this.buildPayload(validTexts, task)
       );
 
       // Create result array with proper length
@@ -479,7 +544,10 @@ export class Embedder {
   }
 
   get cacheStats() {
-    return this._cache.stats;
+    return {
+      ...this._cache.stats,
+      keyCount: this.clients.length,
+    };
   }
 }
 
