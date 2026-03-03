@@ -78,6 +78,28 @@ async function runCliSmoke() {
     "--dry-run",
   ]);
 
+  // 3) Access reinforcement formula smoke test
+  const { parseAccessMetadata, buildUpdatedMetadata, computeEffectiveHalfLife } =
+    jiti("../src/access-tracker.ts");
+
+  // Verify formula basics
+  const hl0 = computeEffectiveHalfLife(60, 0, 0, 0.5, 3);
+  assert.equal(hl0, 60, "zero access = base half-life");
+
+  const hl10 = computeEffectiveHalfLife(60, 10, Date.now(), 0.5, 3);
+  assert.ok(hl10 > 60 && hl10 < 180, `10 accesses: ${hl10} should be between 60 and 180`);
+
+  const hlCapped = computeEffectiveHalfLife(60, 100000, Date.now(), 0.5, 3);
+  assert.equal(hlCapped, 180, "capped at 3x");
+
+  // Verify metadata round-trip
+  const meta = buildUpdatedMetadata("{}", 5);
+  const parsed = parseAccessMetadata(meta);
+  assert.equal(parsed.accessCount, 5);
+  assert.ok(parsed.lastAccessedAt > 0);
+
+  console.log("OK: Access reinforcement formula verified");
+
   rmSync(workDir, { recursive: true, force: true });
 }
 
