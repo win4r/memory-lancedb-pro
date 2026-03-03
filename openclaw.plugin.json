@@ -199,6 +199,20 @@
             "maximum": 365,
             "default": 60,
             "description": "Time decay half-life in days. Old entries lose score gradually. Floor at 0.5x. Set 0 to disable."
+          },
+          "reinforcementFactor": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2,
+            "default": 0.5,
+            "description": "Access reinforcement factor for time decay. Frequently recalled memories decay slower. 0 to disable."
+          },
+          "maxHalfLifeMultiplier": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 10,
+            "default": 3,
+            "description": "Maximum half-life multiplier from access reinforcement. Prevents frequently accessed memories from becoming immortal."
           }
         }
       },
