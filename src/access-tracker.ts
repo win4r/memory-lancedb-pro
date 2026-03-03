@@ -11,6 +11,8 @@
  * - AccessTracker         — debounced write-back tracker for batch metadata updates
  */
 
+import type { MemoryStore } from "./store.js";
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -18,6 +20,15 @@
 export interface AccessMetadata {
   readonly accessCount: number;
   readonly lastAccessedAt: number;
+}
+
+export interface AccessTrackerOptions {
+  readonly store: MemoryStore;
+  readonly logger: {
+    warn: (...args: unknown[]) => void;
+    info?: (...args: unknown[]) => void;
+  };
+  readonly debounceMs?: number;
 }
 
 // ============================================================================
@@ -36,7 +47,10 @@ const ACCESS_DECAY_HALF_LIFE_DAYS = 30;
 
 function clampAccessCount(value: number): number {
   if (!Number.isFinite(value)) return MIN_ACCESS_COUNT;
-  return Math.min(MAX_ACCESS_COUNT, Math.max(MIN_ACCESS_COUNT, Math.floor(value)));
+  return Math.min(
+    MAX_ACCESS_COUNT,
+    Math.max(MIN_ACCESS_COUNT, Math.floor(value)),
+  );
 }
 
 // ============================================================================
@@ -49,7 +63,9 @@ function clampAccessCount(value: number): number {
  * Handles: undefined, empty string, malformed JSON, negative numbers,
  * numbers exceeding 10000. Always returns a valid AccessMetadata.
  */
-export function parseAccessMetadata(metadata: string | undefined): AccessMetadata {
+export function parseAccessMetadata(
+  metadata: string | undefined,
+): AccessMetadata {
   if (metadata === undefined || metadata === "") {
     return { accessCount: 0, lastAccessedAt: 0 };
   }
@@ -68,13 +84,15 @@ export function parseAccessMetadata(metadata: string | undefined): AccessMetadat
   const obj = parsed as Record<string, unknown>;
 
   const rawCount = typeof obj.accessCount === "number" ? obj.accessCount : 0;
-  const rawLastAccessed = typeof obj.lastAccessedAt === "number" ? obj.lastAccessedAt : 0;
+  const rawLastAccessed =
+    typeof obj.lastAccessedAt === "number" ? obj.lastAccessedAt : 0;
 
   return {
     accessCount: clampAccessCount(rawCount),
-    lastAccessedAt: Number.isFinite(rawLastAccessed) && rawLastAccessed >= 0
-      ? rawLastAccessed
-      : 0,
+    lastAccessedAt:
+      Number.isFinite(rawLastAccessed) && rawLastAccessed >= 0
+        ? rawLastAccessed
+        : 0,
   };
 }
 
@@ -146,7 +164,10 @@ export function computeEffectiveHalfLife(
   }
 
   const now = Date.now();
-  const daysSinceLastAccess = Math.max(0, (now - lastAccessedAt) / (1000 * 60 * 60 * 24));
+  const daysSinceLastAccess = Math.max(
+    0,
+    (now - lastAccessedAt) / (1000 * 60 * 60 * 24),
+  );
 
   // Access freshness decays exponentially with 30-day half-life
   const accessFreshness = Math.exp(
@@ -157,7 +178,8 @@ export function computeEffectiveHalfLife(
   const effectiveAccessCount = accessCount * accessFreshness;
 
   // Logarithmic extension for diminishing returns
-  const extension = baseHalfLife * reinforcementFactor * Math.log1p(effectiveAccessCount);
+  const extension =
+    baseHalfLife * reinforcementFactor * Math.log1p(effectiveAccessCount);
 
   const result = baseHalfLife + extension;
 
@@ -175,14 +197,23 @@ export function computeEffectiveHalfLife(
  *
  * `recordAccess()` is synchronous (Map update only, no I/O). Pending deltas
  * accumulate until `flush()` is called (or by a future scheduled callback).
+ * On flush, each pending entry is read from the store, its metadata is
+ * merged with the accumulated access delta, and written back.
  */
 export class AccessTracker {
   private readonly pending: Map<string, number> = new Map();
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly debounceMs: number;
+  private readonly store: MemoryStore;
+  private readonly logger: {
+    warn: (...args: unknown[]) => void;
+    info?: (...args: unknown[]) => void;
+  };
 
-  constructor(debounceMs = 5_000) {
-    this.debounceMs = debounceMs;
+  constructor(options: AccessTrackerOptions) {
+    this.store = options.store;
+    this.logger = options.logger;
+    this.debounceMs = options.debounceMs ?? 5_000;
   }
 
   /**
@@ -207,12 +238,35 @@ export class AccessTracker {
   }
 
   /**
-   * Flush pending updates — clears the pending map.
-   * (Actual metadata merge with the store will be wired in a later task.)
+   * Flush pending access deltas to the store.
+   *
+   * For each pending entry, reads the current metadata via store.update()
+   * with an empty updates object (acts as a "getById"), then merges the
+   * access delta and writes the updated metadata back.
    */
-  flush(): void {
+  async flush(): Promise<void> {
     this.clearTimer();
+    if (this.pending.size === 0) return;
+
+    const batch = new Map(this.pending);
     this.pending.clear();
+
+    for (const [id, delta] of batch) {
+      try {
+        // store.update(id, {}) reads existing row, applies no changes,
+        // and returns the current MemoryEntry (delete + re-add is a no-op).
+        const current = await this.store.update(id, {});
+        if (!current) continue;
+
+        const updatedMeta = buildUpdatedMetadata(current.metadata, delta);
+        await this.store.update(id, { metadata: updatedMeta });
+      } catch (err) {
+        this.logger.warn(
+          `access-tracker: write-back failed for ${id.slice(0, 8)}:`,
+          err,
+        );
+      }
+    }
   }
 
   /**
@@ -230,7 +284,7 @@ export class AccessTracker {
   private resetTimer(): void {
     this.clearTimer();
     this.debounceTimer = setTimeout(() => {
-      this.flush();
+      void this.flush();
     }, this.debounceMs);
   }
 

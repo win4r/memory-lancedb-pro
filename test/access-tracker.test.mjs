@@ -12,6 +12,49 @@ const {
 } = jiti("../src/access-tracker.ts");
 
 // ============================================================================
+// Test helpers
+// ============================================================================
+
+function createMockStore(entries = new Map()) {
+  return {
+    /** @type {Array<{id: string, updates: object}>} */
+    updateCalls: [],
+    async update(id, updates) {
+      this.updateCalls.push({ id, updates });
+      const entry = entries.get(id);
+      if (!entry) return null;
+      // Simulate store.update: apply updates to entry
+      if (updates.metadata) {
+        entry.metadata = updates.metadata;
+      }
+      return { ...entry };
+    },
+  };
+}
+
+function createMockLogger() {
+  return {
+    /** @type {unknown[][]} */
+    warnings: [],
+    warn(...args) {
+      this.warnings.push(args);
+    },
+    info() {},
+  };
+}
+
+function createTracker(overrides = {}) {
+  const store = overrides.store || createMockStore();
+  const logger = overrides.logger || createMockLogger();
+  const debounceMs = overrides.debounceMs ?? 60_000;
+  return {
+    tracker: new AccessTracker({ store, logger, debounceMs }),
+    store,
+    logger,
+  };
+}
+
+// ============================================================================
 // parseAccessMetadata
 // ============================================================================
 
@@ -302,9 +345,17 @@ describe("computeEffectiveHalfLife", () => {
 describe("AccessTracker", () => {
   /** @type {InstanceType<typeof AccessTracker>} */
   let tracker;
+  let mockStore;
+  let mockLogger;
 
   beforeEach(() => {
-    tracker = new AccessTracker(60_000); // long debounce to avoid auto-flush during tests
+    mockStore = createMockStore();
+    mockLogger = createMockLogger();
+    tracker = new AccessTracker({
+      store: mockStore,
+      logger: mockLogger,
+      debounceMs: 60_000, // long debounce to avoid auto-flush during tests
+    });
   });
 
   afterEach(() => {
@@ -359,10 +410,10 @@ describe("AccessTracker", () => {
     assert.equal(internal.has("id-99"), false);
   });
 
-  it("flush clears all pending updates", () => {
+  it("flush clears all pending updates", async () => {
     tracker.recordAccess(["id-1", "id-2"]);
     assert.equal(tracker.getPendingUpdates().size, 2);
-    tracker.flush();
+    await tracker.flush();
     assert.equal(tracker.getPendingUpdates().size, 0);
   });
 
@@ -372,9 +423,9 @@ describe("AccessTracker", () => {
     assert.equal(tracker.getPendingUpdates().size, 0);
   });
 
-  it("can record new accesses after flush", () => {
+  it("can record new accesses after flush", async () => {
     tracker.recordAccess(["id-1"]);
-    tracker.flush();
+    await tracker.flush();
     tracker.recordAccess(["id-2"]);
     const pending = tracker.getPendingUpdates();
     assert.equal(pending.has("id-1"), false);
@@ -401,7 +452,13 @@ describe("AccessTracker", () => {
   });
 
   it("debounce auto-flush fires after configured delay", async () => {
-    const fastTracker = new AccessTracker(50); // 50ms debounce
+    const fastStore = createMockStore();
+    const fastLogger = createMockLogger();
+    const fastTracker = new AccessTracker({
+      store: fastStore,
+      logger: fastLogger,
+      debounceMs: 50, // 50ms debounce
+    });
     try {
       fastTracker.recordAccess(["id-1"]);
       assert.equal(fastTracker.getPendingUpdates().size, 1);
@@ -420,7 +477,13 @@ describe("AccessTracker", () => {
   });
 
   it("debounce timer resets on each recordAccess", async () => {
-    const fastTracker = new AccessTracker(80);
+    const fastStore = createMockStore();
+    const fastLogger = createMockLogger();
+    const fastTracker = new AccessTracker({
+      store: fastStore,
+      logger: fastLogger,
+      debounceMs: 80,
+    });
     try {
       fastTracker.recordAccess(["id-1"]);
 
@@ -450,6 +513,132 @@ describe("AccessTracker", () => {
       );
     } finally {
       fastTracker.destroy();
+    }
+  });
+});
+
+// ============================================================================
+// AccessTracker flush integration
+// ============================================================================
+
+describe("AccessTracker flush integration", () => {
+  it("flush calls store.update with merged metadata for each pending ID", async () => {
+    const id1 = "aaaaaaaa-1111-2222-3333-444444444444";
+    const id2 = "bbbbbbbb-1111-2222-3333-444444444444";
+
+    const entries = new Map([
+      [id1, { id: id1, metadata: JSON.stringify({ accessCount: 2, customTag: "keep" }) }],
+      [id2, { id: id2, metadata: JSON.stringify({ accessCount: 0 }) }],
+    ]);
+
+    const store = createMockStore(entries);
+    const logger = createMockLogger();
+
+    const tracker = new AccessTracker({ store, logger, debounceMs: 60_000 });
+    try {
+      tracker.recordAccess([id1, id1, id1]); // delta=3 for id1
+      tracker.recordAccess([id2]);             // delta=1 for id2
+
+      await tracker.flush();
+
+      // Pending should be empty after flush
+      assert.equal(tracker.getPendingUpdates().size, 0);
+
+      // store.update should have been called:
+      //   2 read calls (empty updates) + 2 write calls (with metadata)
+      assert.equal(store.updateCalls.length, 4);
+
+      // Find the write-back calls (ones with metadata in updates)
+      const writeCalls = store.updateCalls.filter((c) => c.updates.metadata);
+      assert.equal(writeCalls.length, 2);
+
+      // Verify id1 metadata merge: accessCount 2 + 3 = 5, customTag preserved
+      const id1Write = writeCalls.find((c) => c.id === id1);
+      assert.ok(id1Write, "Should have a write call for id1");
+      const id1Meta = JSON.parse(id1Write.updates.metadata);
+      assert.equal(id1Meta.accessCount, 5);
+      assert.equal(id1Meta.customTag, "keep");
+      assert.equal(typeof id1Meta.lastAccessedAt, "number");
+
+      // Verify id2 metadata merge: accessCount 0 + 1 = 1
+      const id2Write = writeCalls.find((c) => c.id === id2);
+      assert.ok(id2Write, "Should have a write call for id2");
+      const id2Meta = JSON.parse(id2Write.updates.metadata);
+      assert.equal(id2Meta.accessCount, 1);
+    } finally {
+      tracker.destroy();
+    }
+  });
+
+  it("flush skips entries not found in store (returns null)", async () => {
+    const missingId = "cccccccc-1111-2222-3333-444444444444";
+
+    // Empty store — all lookups return null
+    const store = createMockStore(new Map());
+    const logger = createMockLogger();
+
+    const tracker = new AccessTracker({ store, logger, debounceMs: 60_000 });
+    try {
+      tracker.recordAccess([missingId]);
+      await tracker.flush();
+
+      // Should have tried to read, but no write-back
+      assert.equal(store.updateCalls.length, 1);
+      assert.deepEqual(store.updateCalls[0].updates, {});
+
+      // No warnings (null return is expected, not an error)
+      assert.equal(logger.warnings.length, 0);
+    } finally {
+      tracker.destroy();
+    }
+  });
+
+  it("flush logs warning on store error and continues", async () => {
+    const id1 = "dddddddd-1111-2222-3333-444444444444";
+    const id2 = "eeeeeeee-1111-2222-3333-444444444444";
+
+    let callCount = 0;
+    const failingStore = {
+      async update(id, updates) {
+        callCount++;
+        if (id === id1) {
+          throw new Error("simulated store failure");
+        }
+        // id2 succeeds
+        return { id, metadata: JSON.stringify({ accessCount: 0 }) };
+      },
+    };
+
+    const logger = createMockLogger();
+    const tracker = new AccessTracker({ store: failingStore, logger, debounceMs: 60_000 });
+    try {
+      tracker.recordAccess([id1, id2]);
+      await tracker.flush();
+
+      // Should have warned about id1 failure
+      assert.ok(logger.warnings.length >= 1, "Should log at least one warning");
+      const warningMsg = String(logger.warnings[0][0]);
+      assert.ok(
+        warningMsg.includes("access-tracker"),
+        `Warning should mention access-tracker, got: ${warningMsg}`,
+      );
+
+      // id2 should have been processed (store was called for it)
+      assert.ok(callCount >= 2, "Store should have been called for both IDs");
+    } finally {
+      tracker.destroy();
+    }
+  });
+
+  it("flush is a no-op when pending map is empty", async () => {
+    const store = createMockStore();
+    const logger = createMockLogger();
+    const tracker = new AccessTracker({ store, logger, debounceMs: 60_000 });
+    try {
+      await tracker.flush();
+      assert.equal(store.updateCalls.length, 0);
+    } finally {
+      tracker.destroy();
     }
   });
 });

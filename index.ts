@@ -404,7 +404,11 @@ const memoryLanceDBProPlugin = {
     });
 
     // Access reinforcement tracker (debounced write-back)
-    const accessTracker = new AccessTracker(5000);
+    const accessTracker = new AccessTracker({
+      store,
+      logger: api.logger,
+      debounceMs: 5000,
+    });
     retriever.setAccessTracker(accessTracker);
 
     const scopeManager = createScopeManager(config.scopes);
