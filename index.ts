@@ -19,6 +19,8 @@ import { registerAllMemoryTools } from "./src/tools.js";
 import { shouldSkipRetrieval } from "./src/adaptive-retrieval.js";
 import { AccessTracker } from "./src/access-tracker.js";
 import { createMemoryCLI } from "./cli.js";
+import { createGraphitiBridge } from "./src/graphiti/bridge.js";
+import type { GraphitiPluginConfig } from "./src/graphiti/types.js";
 
 // ============================================================================
 // Configuration & Types
@@ -67,6 +69,7 @@ interface PluginConfig {
   };
   enableManagementTools?: boolean;
   sessionMemory?: { enabled?: boolean; messageCount?: number };
+  graphiti?: GraphitiPluginConfig;
 }
 
 // ============================================================================
@@ -100,6 +103,13 @@ function parsePositiveInt(value: unknown): number | undefined {
     if (Number.isFinite(n) && n > 0) return Math.floor(n);
   }
   return undefined;
+}
+
+function parseBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  return fallback;
 }
 
 // ============================================================================
@@ -413,6 +423,12 @@ const memoryLanceDBProPlugin = {
 
     const scopeManager = createScopeManager(config.scopes);
     const migrator = createMigrator(store);
+    const graphitiBridge = config.graphiti?.enabled
+      ? createGraphitiBridge({
+          config: config.graphiti,
+          logger: api.logger,
+        })
+      : undefined;
 
     const pluginVersion = getPluginVersion();
 
@@ -427,6 +443,12 @@ const memoryLanceDBProPlugin = {
       `memory-lancedb-pro@${pluginVersion}: plugin registered (db: ${resolvedDbPath}, model: ${config.embedding.model || "text-embedding-3-small"})`,
     );
 
+    if (graphitiBridge) {
+      setTimeout(() => {
+        void graphitiBridge.warmup();
+      }, 0);
+    }
+
     // ========================================================================
     // Register Tools
     // ========================================================================
@@ -439,10 +461,14 @@ const memoryLanceDBProPlugin = {
         scopeManager,
         embedder,
         agentId: undefined, // Will be determined at runtime from context
+        graphitiBridge,
+        graphitiConfig: config.graphiti,
+        logger: api.logger,
       },
       {
         enableManagementTools: config.enableManagementTools,
-      },
+        enableGraphRecallTool: config.graphiti?.enabled === true && config.graphiti.read.enableGraphRecallTool,
+      }
     );
 
     // ========================================================================
@@ -633,13 +659,50 @@ const memoryLanceDBProPlugin = {
               continue;
             }
 
-            await store.store({
+            const entry = await store.store({
               text,
               vector,
               importance: 0.7,
               category,
               scope: defaultScope,
             });
+
+            if (
+              graphitiBridge &&
+              config.graphiti?.enabled &&
+              config.graphiti.write.autoCapture
+            ) {
+              const graphiti = await graphitiBridge.addEpisode({
+                text,
+                scope: defaultScope,
+                metadata: {
+                  source: "agent_end",
+                  agentId,
+                  memoryId: entry.id,
+                  category: entry.category,
+                  scope: entry.scope,
+                },
+              });
+
+              if (graphiti.status !== "skipped") {
+                try {
+                  const currentMetadata = safeParseJson(entry.metadata);
+                  const nextMetadata = {
+                    ...currentMetadata,
+                    graphiti: {
+                      groupId: graphiti.groupId,
+                      episodeRef: graphiti.episodeRef,
+                      status: graphiti.status,
+                      error: graphiti.error,
+                      updatedAt: new Date().toISOString(),
+                    },
+                  };
+                  await store.update(entry.id, { metadata: JSON.stringify(nextMetadata) }, [defaultScope]);
+                } catch (err) {
+                  api.logger.warn(`memory-lancedb-pro: auto-capture graphiti metadata update failed: ${String(err)}`);
+                }
+              }
+            }
             stored++;
           }
 
@@ -946,6 +1009,55 @@ function parsePluginConfig(value: unknown): PluginConfig {
     throw new Error("embedding.apiKey is required (set directly or via OPENAI_API_KEY env var)");
   }
 
+  const graphitiRaw =
+    typeof cfg.graphiti === "object" && cfg.graphiti !== null
+      ? (cfg.graphiti as Record<string, unknown>)
+      : undefined;
+
+  const graphiti: GraphitiPluginConfig | undefined = graphitiRaw
+    ? {
+        enabled: parseBoolean(graphitiRaw.enabled, false),
+        baseUrl:
+          typeof graphitiRaw.baseUrl === "string" && graphitiRaw.baseUrl.trim().length > 0
+            ? resolveEnvVars(graphitiRaw.baseUrl)
+            : "http://localhost:8000",
+        transport:
+          graphitiRaw.transport === "mcp" || graphitiRaw.transport === "auto"
+            ? graphitiRaw.transport
+            : "auto",
+        groupIdMode: graphitiRaw.groupIdMode === "fixed" ? "fixed" : "scope",
+        fixedGroupId:
+          typeof graphitiRaw.fixedGroupId === "string" && graphitiRaw.fixedGroupId.trim().length > 0
+            ? graphitiRaw.fixedGroupId.trim()
+            : undefined,
+        timeoutMs: parsePositiveInt(graphitiRaw.timeoutMs) ?? 4000,
+        failOpen: parseBoolean(graphitiRaw.failOpen, true),
+        write: (() => {
+          const writeRaw =
+            typeof graphitiRaw.write === "object" && graphitiRaw.write !== null
+              ? (graphitiRaw.write as Record<string, unknown>)
+              : {};
+          return {
+            memoryStore: parseBoolean(writeRaw.memoryStore, true),
+            autoCapture: parseBoolean(writeRaw.autoCapture, false),
+            sessionSummary: parseBoolean(writeRaw.sessionSummary, false),
+          };
+        })(),
+        read: (() => {
+          const readRaw =
+            typeof graphitiRaw.read === "object" && graphitiRaw.read !== null
+              ? (graphitiRaw.read as Record<string, unknown>)
+              : {};
+          return {
+            enableGraphRecallTool: parseBoolean(readRaw.enableGraphRecallTool, true),
+            augmentMemoryRecall: parseBoolean(readRaw.augmentMemoryRecall, false),
+            topKNodes: parsePositiveInt(readRaw.topKNodes) ?? 6,
+            topKFacts: parsePositiveInt(readRaw.topKFacts) ?? 10,
+          };
+        })(),
+      }
+    : undefined;
+
   return {
     embedding: {
       provider: "openai-compatible",
@@ -989,6 +1101,7 @@ function parsePluginConfig(value: unknown): PluginConfig {
         ? (cfg.scopes as any)
         : undefined,
     enableManagementTools: cfg.enableManagementTools === true,
+    graphiti,
     sessionMemory:
       typeof cfg.sessionMemory === "object" && cfg.sessionMemory !== null
         ? {
@@ -1003,6 +1116,21 @@ function parsePluginConfig(value: unknown): PluginConfig {
           }
         : undefined,
   };
+}
+
+function safeParseJson(value: string | undefined): Record<string, unknown> {
+  if (!value || !value.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return {};
+  }
+  return {};
 }
 
 export default memoryLanceDBProPlugin;

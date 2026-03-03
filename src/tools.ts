@@ -11,6 +11,9 @@ import type { MemoryStore } from "./store.js";
 import { isNoise } from "./noise-filter.js";
 import type { MemoryScopeManager } from "./scopes.js";
 import type { Embedder } from "./embedder.js";
+import type { GraphitiBridge } from "./graphiti/bridge.js";
+import type { GraphitiPluginConfig } from "./graphiti/types.js";
+import { registerMemoryGraphRecallTool } from "./tools-graphiti.js";
 
 // ============================================================================
 // Types
@@ -29,6 +32,11 @@ interface ToolContext {
   store: MemoryStore;
   scopeManager: MemoryScopeManager;
   embedder: Embedder;
+  graphitiBridge?: GraphitiBridge;
+  graphitiConfig?: GraphitiPluginConfig;
+  logger?: {
+    warn?: (message: string) => void;
+  };
   agentId?: string;
 }
 
@@ -293,6 +301,53 @@ export function registerMemoryStoreTool(
             scope: targetScope,
           });
 
+          let graphitiDetails:
+            | {
+                status: "stored" | "failed" | "skipped";
+                groupId: string;
+                episodeRef?: string;
+                error?: string;
+              }
+            | undefined;
+
+          if (
+            context.graphitiBridge &&
+            context.graphitiConfig?.enabled &&
+            context.graphitiConfig.write.memoryStore
+          ) {
+            graphitiDetails = await context.graphitiBridge.addEpisode({
+              text,
+              scope: targetScope,
+              metadata: {
+                source: "memory_store",
+                memoryId: entry.id,
+                category: entry.category,
+                scope: entry.scope,
+              },
+            });
+
+            if (graphitiDetails.status !== "skipped") {
+              try {
+                const currentMetadata = safeParseJson(entry.metadata);
+                const nextMetadata = {
+                  ...currentMetadata,
+                  graphiti: {
+                    groupId: graphitiDetails.groupId,
+                    episodeRef: graphitiDetails.episodeRef,
+                    status: graphitiDetails.status,
+                    error: graphitiDetails.error,
+                    updatedAt: new Date().toISOString(),
+                  },
+                };
+                const metadata = JSON.stringify(nextMetadata);
+                await context.store.update(entry.id, { metadata }, [targetScope]);
+                entry.metadata = metadata;
+              } catch (err) {
+                context.logger?.warn?.(`memory-lancedb-pro: graphiti metadata update failed: ${String(err)}`);
+              }
+            }
+          }
+
           return {
             content: [
               {
@@ -306,6 +361,7 @@ export function registerMemoryStoreTool(
               scope: entry.scope,
               category: entry.category,
               importance: entry.importance,
+              graphiti: graphitiDetails,
             },
           };
         } catch (error) {
@@ -899,6 +955,7 @@ export function registerAllMemoryTools(
   context: ToolContext,
   options: {
     enableManagementTools?: boolean;
+    enableGraphRecallTool?: boolean;
   } = {},
 ) {
   // Core tools (always enabled)
@@ -906,10 +963,27 @@ export function registerAllMemoryTools(
   registerMemoryStoreTool(api, context);
   registerMemoryForgetTool(api, context);
   registerMemoryUpdateTool(api, context);
+  if (options.enableGraphRecallTool) {
+    registerMemoryGraphRecallTool(api, context);
+  }
 
   // Management tools (optional)
   if (options.enableManagementTools) {
     registerMemoryStatsTool(api, context);
     registerMemoryListTool(api, context);
   }
+}
+function safeParseJson(value: string | undefined): Record<string, unknown> {
+  if (!value || !value.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return {};
+  }
+  return {};
 }

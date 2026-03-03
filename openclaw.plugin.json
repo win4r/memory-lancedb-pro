@@ -241,6 +241,97 @@
           }
         }
       },
+      "graphiti": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable Graphiti mirror write and graph recall tools"
+          },
+          "baseUrl": {
+            "type": "string",
+            "default": "http://localhost:8000",
+            "description": "Graphiti MCP server base URL"
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "mcp"
+            ],
+            "default": "auto"
+          },
+          "groupIdMode": {
+            "type": "string",
+            "enum": [
+              "scope",
+              "fixed"
+            ],
+            "default": "scope"
+          },
+          "fixedGroupId": {
+            "type": "string",
+            "description": "Used when groupIdMode=fixed"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 500,
+            "maximum": 120000,
+            "default": 4000
+          },
+          "failOpen": {
+            "type": "boolean",
+            "default": true,
+            "description": "Do not fail memory_store when Graphiti is unavailable"
+          },
+          "write": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "memoryStore": {
+                "type": "boolean",
+                "default": true
+              },
+              "autoCapture": {
+                "type": "boolean",
+                "default": false
+              },
+              "sessionSummary": {
+                "type": "boolean",
+                "default": false
+              }
+            }
+          },
+          "read": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enableGraphRecallTool": {
+                "type": "boolean",
+                "default": true
+              },
+              "augmentMemoryRecall": {
+                "type": "boolean",
+                "default": false
+              },
+              "topKNodes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 30,
+                "default": 6
+              },
+              "topKFacts": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 30,
+                "default": 10
+              }
+            }
+          }
+        }
+      },
       "scopes": {
         "type": "object",
         "additionalProperties": false,
