@@ -20,13 +20,14 @@ interface GraphitiBridgeOptions {
   logger?: LoggerLike;
 }
 
-const ADD_EPISODE_TOOL_CANDIDATES = ["add_episode", "graphiti_add_episode"];
+const ADD_EPISODE_TOOL_CANDIDATES = ["add_memory", "add_episode", "graphiti_add_episode"];
 const SEARCH_NODES_TOOL_CANDIDATES = ["search_nodes", "graphiti_search_nodes"];
-const SEARCH_FACTS_TOOL_CANDIDATES = ["search_facts", "graphiti_search_facts"];
+const SEARCH_FACTS_TOOL_CANDIDATES = ["search_memory_facts", "search_facts", "graphiti_search_facts"];
 
 export class GraphitiBridge {
   private readonly client: GraphitiMcpClient;
   private knownTools = new Set<string>();
+  private loggedSanitizedGroupIds = new Set<string>();
 
   constructor(
     private readonly config: GraphitiPluginConfig,
@@ -63,6 +64,13 @@ export class GraphitiBridge {
     try {
       const tool = await this.pickFirstTool(ADD_EPISODE_TOOL_CANDIDATES);
       const argsCandidates = [
+        {
+          name: `memory-lancedb-pro-${Date.now()}`,
+          episode_body: input.text,
+          group_id: groupId,
+          source: "text",
+          source_description: "memory-lancedb-pro",
+        },
         { group_id: groupId, text: input.text, metadata: input.metadata ?? {} },
         { groupId, text: input.text, metadata: input.metadata ?? {} },
         {
@@ -127,6 +135,7 @@ export class GraphitiBridge {
     try {
       const tool = await this.pickFirstTool(SEARCH_NODES_TOOL_CANDIDATES);
       const payloads = [
+        { group_ids: [groupId], query, max_nodes: limit },
         { group_id: groupId, query, limit },
         { groupId, query, limit },
         { group_id: groupId, q: query, top_k: limit },
@@ -150,6 +159,7 @@ export class GraphitiBridge {
     try {
       const tool = await this.pickFirstTool(SEARCH_FACTS_TOOL_CANDIDATES);
       const payloads = [
+        { group_ids: [groupId], query, max_facts: limit },
         { group_id: groupId, query, limit },
         { groupId, query, limit },
         { group_id: groupId, q: query, top_k: limit },
@@ -170,10 +180,17 @@ export class GraphitiBridge {
   }
 
   private resolveGroupId(scope: string): string {
-    if (this.config.groupIdMode === "fixed") {
-      return this.config.fixedGroupId || "main";
+    const rawGroupId = this.config.groupIdMode === "fixed"
+      ? (this.config.fixedGroupId || "main")
+      : scope;
+    const sanitized = sanitizeGroupId(rawGroupId);
+    if (sanitized !== rawGroupId && !this.loggedSanitizedGroupIds.has(rawGroupId)) {
+      this.loggedSanitizedGroupIds.add(rawGroupId);
+      this.logger?.warn?.(
+        `memory-lancedb-pro: graphiti group_id sanitized (${rawGroupId} -> ${sanitized})`,
+      );
     }
-    return scope;
+    return sanitized;
   }
 
   private async pickFirstTool(candidates: string[]): Promise<string> {
@@ -198,6 +215,18 @@ export class GraphitiBridge {
 
 export function createGraphitiBridge(options: GraphitiBridgeOptions): GraphitiBridge {
   return new GraphitiBridge(options.config, options.logger);
+}
+
+function sanitizeGroupId(value: string): string {
+  const trimmed = (value || "").trim();
+  if (!trimmed) {
+    return "main";
+  }
+  const normalized = trimmed
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized || "main";
 }
 
 function extractEpisodeRef(result: unknown): string | undefined {
@@ -263,7 +292,7 @@ function extractStructuredPayload(result: unknown): Record<string, unknown> {
     const record = result as Record<string, unknown>;
     const structured = record.structuredContent;
     if (structured && typeof structured === "object") {
-      return structured as Record<string, unknown>;
+      return unwrapCommonEnvelope(structured);
     }
 
     const content = record.content;
@@ -276,7 +305,7 @@ function extractStructuredPayload(result: unknown): Record<string, unknown> {
           try {
             const parsed = JSON.parse(text) as Record<string, unknown>;
             if (parsed && typeof parsed === "object") {
-              return parsed;
+              return unwrapCommonEnvelope(parsed);
             }
           } catch {
             // ignore parse errors and continue
@@ -284,9 +313,44 @@ function extractStructuredPayload(result: unknown): Record<string, unknown> {
         }
       }
     }
-    return record;
+    return unwrapCommonEnvelope(record);
   }
   return {};
+}
+
+function unwrapCommonEnvelope(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  let cursor = value as Record<string, unknown>;
+  const visited = new Set<Record<string, unknown>>();
+  while (!visited.has(cursor)) {
+    visited.add(cursor);
+
+    if (hasArrayKeys(cursor, ["nodes", "facts", "items", "results", "data"])) {
+      return cursor;
+    }
+
+    const nested = cursor.result;
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      cursor = nested as Record<string, unknown>;
+      continue;
+    }
+
+    return cursor;
+  }
+
+  return cursor;
+}
+
+function hasArrayKeys(payload: Record<string, unknown>, keys: string[]): boolean {
+  for (const key of keys) {
+    if (Array.isArray(payload[key])) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function pickArray(

@@ -1020,7 +1020,7 @@ function parsePluginConfig(value: unknown): PluginConfig {
         baseUrl:
           typeof graphitiRaw.baseUrl === "string" && graphitiRaw.baseUrl.trim().length > 0
             ? resolveEnvVars(graphitiRaw.baseUrl)
-            : "http://localhost:8000",
+            : "http://localhost:8001",
         transport:
           graphitiRaw.transport === "mcp" || graphitiRaw.transport === "auto"
             ? graphitiRaw.transport
