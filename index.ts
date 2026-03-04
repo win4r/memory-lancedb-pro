@@ -625,9 +625,17 @@ const memoryLanceDBProPlugin = {
             const vector = await embedder.embedPassage(text);
 
             // Check for duplicates using raw vector similarity (bypasses importance/recency weighting)
-            const existing = await store.vectorSearch(vector, 1, 0.1, [
-              defaultScope,
-            ]);
+            // Fail-open by design: dedup should not block auto-capture writes.
+            let existing: Awaited<ReturnType<typeof store.vectorSearch>> = [];
+            try {
+              existing = await store.vectorSearch(vector, 1, 0.1, [
+                defaultScope,
+              ]);
+            } catch (err) {
+              api.logger.warn(
+                `memory-lancedb-pro: auto-capture duplicate pre-check failed, continue store: ${String(err)}`,
+              );
+            }
 
             if (existing.length > 0 && existing[0].score > 0.95) {
               continue;

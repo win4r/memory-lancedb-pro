@@ -263,9 +263,17 @@ export function registerMemoryStoreTool(
           const vector = await context.embedder.embedPassage(text);
 
           // Check for duplicates using raw vector similarity (bypasses importance/recency weighting)
-          const existing = await context.store.vectorSearch(vector, 1, 0.1, [
-            targetScope,
-          ]);
+          // Fail-open by design: dedup must never block a legitimate memory write.
+          let existing: Awaited<ReturnType<typeof context.store.vectorSearch>> = [];
+          try {
+            existing = await context.store.vectorSearch(vector, 1, 0.1, [
+              targetScope,
+            ]);
+          } catch (err) {
+            console.warn(
+              `memory-lancedb-pro: duplicate pre-check failed, continue store: ${String(err)}`,
+            );
+          }
 
           if (existing.length > 0 && existing[0].score > 0.98) {
             return {
