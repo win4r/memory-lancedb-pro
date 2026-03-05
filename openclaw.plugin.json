@@ -270,6 +270,21 @@
             }
           }
         }
+      },
+      "mdMirror": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable dual-write: store memories in both LanceDB and human-readable Markdown files"
+          },
+          "dir": {
+            "type": "string",
+            "description": "Fallback directory for Markdown mirror files when agent workspace is unknown"
+          }
+        }
       }
     },
     "required": [
@@ -447,6 +462,15 @@
     "enableManagementTools": {
       "label": "Management Tools",
       "help": "Enable memory_list and memory_stats tools for debugging and auditing",
+      "advanced": true
+    },
+    "mdMirror.enabled": {
+      "label": "Markdown Mirror",
+      "help": "Write a human-readable Markdown copy alongside LanceDB storage (dual-write mode)"
+    },
+    "mdMirror.dir": {
+      "label": "Mirror Fallback Directory",
+      "help": "Fallback directory when agent workspace mapping is unavailable",
       "advanced": true
     }
   }

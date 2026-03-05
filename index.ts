@@ -6,7 +6,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { homedir } from "node:os";
 import { join, dirname, basename } from "node:path";
-import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
+import { readFile, readdir, writeFile, mkdir, appendFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 
 // Import core components
@@ -16,6 +16,7 @@ import { createRetriever, DEFAULT_RETRIEVAL_CONFIG } from "./src/retriever.js";
 import { createScopeManager } from "./src/scopes.js";
 import { createMigrator } from "./src/migrate.js";
 import { registerAllMemoryTools } from "./src/tools.js";
+import type { MdMirrorWriter } from "./src/tools.js";
 import { shouldSkipRetrieval } from "./src/adaptive-retrieval.js";
 import { AccessTracker } from "./src/access-tracker.js";
 import { createMemoryCLI } from "./cli.js";
@@ -67,6 +68,7 @@ interface PluginConfig {
   };
   enableManagementTools?: boolean;
   sessionMemory?: { enabled?: boolean; messageCount?: number };
+  mdMirror?: { enabled?: boolean; dir?: string };
 }
 
 // ============================================================================
@@ -338,6 +340,92 @@ async function findPreviousSessionFile(
 }
 
 // ============================================================================
+// Markdown Mirror (dual-write)
+// ============================================================================
+
+type AgentWorkspaceMap = Record<string, string>;
+
+function resolveAgentWorkspaceMap(api: OpenClawPluginApi): AgentWorkspaceMap {
+  const map: AgentWorkspaceMap = {};
+
+  // Try api.config first (runtime config)
+  const agents = Array.isArray((api as any).config?.agents?.list)
+    ? (api as any).config.agents.list
+    : [];
+
+  for (const agent of agents) {
+    if (agent?.id && typeof agent.workspace === "string") {
+      map[String(agent.id)] = agent.workspace;
+    }
+  }
+
+  // Fallback: read from openclaw.json (respect OPENCLAW_HOME if set)
+  if (Object.keys(map).length === 0) {
+    try {
+      const openclawHome = process.env.OPENCLAW_HOME || join(homedir(), ".openclaw");
+      const configPath = join(openclawHome, "openclaw.json");
+      const raw = readFileSync(configPath, "utf8");
+      const parsed = JSON.parse(raw);
+      const list = parsed?.agents?.list;
+      if (Array.isArray(list)) {
+        for (const agent of list) {
+          if (agent?.id && typeof agent.workspace === "string") {
+            map[String(agent.id)] = agent.workspace;
+          }
+        }
+      }
+    } catch {
+      /* silent */
+    }
+  }
+
+  return map;
+}
+
+function createMdMirrorWriter(
+  api: OpenClawPluginApi,
+  config: PluginConfig,
+): MdMirrorWriter | null {
+  if (config.mdMirror?.enabled !== true) return null;
+
+  const fallbackDir = api.resolvePath(config.mdMirror.dir || "memory-md");
+  const workspaceMap = resolveAgentWorkspaceMap(api);
+
+  if (Object.keys(workspaceMap).length > 0) {
+    api.logger.info(
+      `mdMirror: resolved ${Object.keys(workspaceMap).length} agent workspace(s)`,
+    );
+  } else {
+    api.logger.warn(
+      `mdMirror: no agent workspaces found, writes will use fallback dir: ${fallbackDir}`,
+    );
+  }
+
+  return async (entry, meta) => {
+    try {
+      const ts = new Date(entry.timestamp || Date.now());
+      const dateStr = ts.toISOString().split("T")[0];
+
+      let mirrorDir = fallbackDir;
+      if (meta?.agentId && workspaceMap[meta.agentId]) {
+        mirrorDir = join(workspaceMap[meta.agentId], "memory");
+      }
+
+      const filePath = join(mirrorDir, `${dateStr}.md`);
+      const agentLabel = meta?.agentId ? ` agent=${meta.agentId}` : "";
+      const sourceLabel = meta?.source ? ` source=${meta.source}` : "";
+      const safeText = entry.text.replace(/\n/g, " ").slice(0, 500);
+      const line = `- ${ts.toISOString()} [${entry.category}:${entry.scope}]${agentLabel}${sourceLabel} ${safeText}\n`;
+
+      await mkdir(mirrorDir, { recursive: true });
+      await appendFile(filePath, line, "utf8");
+    } catch (err) {
+      api.logger.warn(`mdMirror: write failed: ${String(err)}`);
+    }
+  };
+}
+
+// ============================================================================
 // Version
 // ============================================================================
 
@@ -428,6 +516,12 @@ const memoryLanceDBProPlugin = {
     );
 
     // ========================================================================
+    // Markdown Mirror
+    // ========================================================================
+
+    const mdMirror = createMdMirrorWriter(api, config);
+
+    // ========================================================================
     // Register Tools
     // ========================================================================
 
@@ -439,6 +533,7 @@ const memoryLanceDBProPlugin = {
         scopeManager,
         embedder,
         agentId: undefined, // Will be determined at runtime from context
+        mdMirror,
       },
       {
         enableManagementTools: config.enableManagementTools,
@@ -641,6 +736,14 @@ const memoryLanceDBProPlugin = {
               scope: defaultScope,
             });
             stored++;
+
+            // Dual-write to Markdown mirror if enabled
+            if (mdMirror) {
+              await mdMirror(
+                { text, category, scope: defaultScope, timestamp: Date.now() },
+                { source: "auto-capture", agentId },
+              );
+            }
           }
 
           if (stored > 0) {
@@ -749,6 +852,14 @@ const memoryLanceDBProPlugin = {
               date: dateStr,
             }),
           });
+
+          // Dual-write to Markdown mirror if enabled
+          if (mdMirror) {
+            await mdMirror(
+              { text: memoryText.replace(/\n/g, " ").slice(0, 500), category: "fact", scope: "global", timestamp: Date.now() },
+              { source: "session-memory" },
+            );
+          }
 
           api.logger.info(
             `session-memory: stored session summary for ${currentSessionId || "unknown"}`,
@@ -999,6 +1110,17 @@ function parsePluginConfig(value: unknown): PluginConfig {
                 .messageCount === "number"
                 ? ((cfg.sessionMemory as Record<string, unknown>)
                     .messageCount as number)
+                : undefined,
+          }
+        : undefined,
+    mdMirror:
+      typeof cfg.mdMirror === "object" && cfg.mdMirror !== null
+        ? {
+            enabled:
+              (cfg.mdMirror as Record<string, unknown>).enabled === true,
+            dir:
+              typeof (cfg.mdMirror as Record<string, unknown>).dir === "string"
+                ? ((cfg.mdMirror as Record<string, unknown>).dir as string)
                 : undefined,
           }
         : undefined,
