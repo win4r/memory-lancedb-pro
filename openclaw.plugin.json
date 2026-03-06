@@ -451,6 +451,13 @@
             "description": "Fallback directory for Markdown mirror files when agent workspace is unknown"
           }
         }
+      },
+      "storageOptions": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Additional storage options for LanceDB connection configuration"
       }
     },
     "required": [
@@ -779,6 +786,12 @@
       "label": "Agent Access Control",
       "help": "Define which scopes each agent can access",
       "advanced": true
+    },
+    "storageOptions": {
+      "label": "Storage Options",
+      "help": "Additional storage options for LanceDB connection configuration (e.g., cloud provider credentials)",
+      "advanced": true,
+      "sensitive": true
     },
     "enableManagementTools": {
       "label": "Management Tools",

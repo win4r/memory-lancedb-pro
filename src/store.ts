@@ -181,8 +181,11 @@ export class MemoryStore {
   private initPromise: Promise<void> | null = null;
   private ftsIndexCreated = false;
   private updateQueue: Promise<void> = Promise.resolve();
+  private readonly storageOptions: Record<string, string>;
 
-  constructor(private readonly config: StoreConfig) {}
+  constructor(private readonly config: StoreConfig) {
+    this.storageOptions = config.storageOptions || {};
+  }
 
   get dbPath(): string {
     return this.config.dbPath;
@@ -208,7 +211,10 @@ export class MemoryStore {
 
     let db: LanceDB.Connection;
     try {
-      db = await lancedb.connect(this.config.dbPath);
+      const connectOpts = Object.keys(this.storageOptions).length > 0
+        ? { storageOptions: this.storageOptions }
+        : undefined;
+      db = await lancedb.connect(this.config.dbPath, connectOpts);
     } catch (err: any) {
       const code = err.code || "";
       const message = err.message || String(err);

@@ -156,6 +156,7 @@ interface PluginConfig {
     dedupeErrorSignals?: boolean;
   };
   mdMirror?: { enabled?: boolean; dir?: string };
+  storageOptions?: Record<string, string>;
 }
 
 type ReflectionThinkLevel = "off" | "minimal" | "low" | "medium" | "high";
@@ -1585,17 +1586,26 @@ const memoryLanceDBProPlugin = {
     // Parse and validate configuration
     const config = parsePluginConfig(api.pluginConfig);
 
-    const resolvedDbPath = api.resolvePath(config.dbPath || getDefaultDbPath());
+    const dbPath = config.dbPath || getDefaultDbPath();
+    const isCloud = /^[a-z][a-z0-9+.-]*:\/\//i.test(dbPath.trim());
 
-    // Pre-flight: validate storage path (symlink resolution, mkdir, write check).
-    // Runs synchronously and logs warnings; does NOT block gateway startup.
-    try {
-      validateStoragePath(resolvedDbPath);
-    } catch (err) {
-      api.logger.warn(
-        `memory-lancedb-pro: storage path issue — ${String(err)}\n` +
-        `  The plugin will still attempt to start, but writes may fail.`,
-      );
+    let resolvedDbPath: string;
+    if (isCloud) {
+      resolvedDbPath = dbPath;
+    } else {
+      // Local path: resolve and validate
+      resolvedDbPath = api.resolvePath(dbPath);
+
+      // Pre-flight: validate storage path (symlink resolution, mkdir, write check).
+      // Runs synchronously and logs warnings; does NOT block gateway startup.
+      try {
+        validateStoragePath(resolvedDbPath);
+      } catch (err) {
+        api.logger.warn(
+          `memory-lancedb-pro: storage path issue — ${String(err)}\n` +
+            `  The plugin will still attempt to start, but writes may fail.`,
+        );
+      }
     }
 
     const vectorDim = getVectorDimensions(
@@ -1604,7 +1614,7 @@ const memoryLanceDBProPlugin = {
     );
 
     // Initialize core components
-    const store = new MemoryStore({ dbPath: resolvedDbPath, vectorDim });
+    const store = new MemoryStore({ dbPath: resolvedDbPath, vectorDim, storageOptions: config.storageOptions });
     const embedder = createEmbedder({
       provider: "openai-compatible",
       apiKey: config.embedding.apiKey,
@@ -3329,6 +3339,23 @@ export function parsePluginConfig(value: unknown): PluginConfig {
               ? ((cfg.mdMirror as Record<string, unknown>).dir as string)
               : undefined,
         }
+        : undefined,
+    storageOptions:
+      typeof cfg.storageOptions === "object" && cfg.storageOptions !== null && !Array.isArray(cfg.storageOptions)
+        ? (() => {
+          const opts = cfg.storageOptions as Record<string, unknown>;
+          const resolved: Record<string, string> = {};
+          for (const [key, value] of Object.entries(opts)) {
+            if (typeof value !== "string") {
+              throw new Error(
+                  `storageOptions[${key}] is invalid: expected string, got ${typeof value}`
+              );
+            }
+            // Resolve environment variables in value
+            resolved[key] = resolveEnvVars(value);
+          }
+          return resolved;
+        })()
         : undefined,
   };
 }
