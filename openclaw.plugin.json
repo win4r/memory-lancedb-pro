@@ -2,7 +2,7 @@
   "id": "memory-lancedb-pro",
   "name": "Memory (LanceDB Pro)",
   "description": "Enhanced LanceDB-backed long-term memory with hybrid retrieval, multi-scope isolation, long-context chunking, and management CLI",
-  "version": "1.0.32",
+  "version": "1.1.0",
   "kind": "memory",
   "configSchema": {
     "type": "object",
@@ -71,7 +71,7 @@
       "enableManagementTools": {
         "type": "boolean",
         "default": false,
-        "description": "Enable memory_list and memory_stats management tools"
+        "description": "Enable management/debug tools such as memory_list, memory_stats, and governance-oriented self-improvement review/extract actions"
       },
       "sessionStrategy": {
         "type": "string",
@@ -624,7 +624,7 @@
     },
     "enableManagementTools": {
       "label": "Management Tools",
-      "help": "Enable memory_list and memory_stats tools for debugging and auditing",
+      "help": "Enable management/debug tools such as memory_list, memory_stats, and governance-oriented self-improvement review/extract actions.",
       "advanced": true
     },
     "mdMirror.enabled": {

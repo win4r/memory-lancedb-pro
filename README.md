@@ -152,6 +152,10 @@ Filters out low-quality content at both auto-capture and tool-store stages:
 - `sessionStrategy: "memoryReflection"`: use plugin reflection hooks (explicit opt-in)
 - `sessionStrategy: "none"`: disable plugin session strategy hooks
 - Compatibility: legacy `sessionMemory.enabled=true|false` maps to `systemSessionMemory|none`
+- Upgrade behavior note:
+  - Previous plugin-driven session-summary behavior is no longer the implicit default.
+  - After upgrading, deployments that want plugin reflection on `/new` / `/reset` must explicitly set `sessionStrategy: "memoryReflection"`.
+  - Keeping legacy `sessionMemory.enabled: true` now preserves safer compatibility through `systemSessionMemory`, instead of silently enabling the newer reflection pipeline.
 
 ### 8. Self-Improvement
 
@@ -159,6 +163,10 @@ Filters out low-quality content at both auto-capture and tool-store stages:
 - `agent:bootstrap`: injects `SELF_IMPROVEMENT_REMINDER.md` into bootstrap context
 - `command:new` / `command:reset`: appends a short `/note self-improvement ...` reminder before reset
 - Files: ensures `.learnings/LEARNINGS.md`, `.learnings/ERRORS.md`, `.learnings/FEATURE_REQUESTS.md`
+- Behavior note:
+  - This flow is integrated into the plugin lifecycle and can coexist with `sessionStrategy=systemSessionMemory`.
+  - It is separate from `memoryReflection`: seeing self-improvement notes or `.learnings/*` activity does not by itself mean reflection storage is enabled.
+  - Governance-oriented extraction/review actions remain explicitly tool-driven rather than background-triggered.
 - Tools:
   - `self_improvement_log`: write structured LRN/ERR/FEAT entries
   - `self_improvement_review`: summarize governance backlog (pending/high/promoted)
@@ -180,7 +188,8 @@ Filters out low-quality content at both auto-capture and tool-store stages:
   - If embedded path fails, automatically fallback to `openclaw agent --local --json`.
   - Only if both fail, write minimal fallback reflection text.
 - Reflect output:
-  - Structured output should use `## Invariants & Reflections` as the final section.
+  - Structured output should include these sections: `## Context`, `## Decisions (durable)`, `## User model deltas (about the human)`, `## Agent model deltas (about the assistant/system)`, `## Lessons & pitfalls (symptom / cause / fix / prevention)`, `## Learning governance candidates (.learnings / promotion / skill extraction)`, `## Open loops / next actions`, `## Retrieval tags / keywords`, `## Invariants`, `## Derived`.
+  - `## Invariants` is for stable rule-like carryover; `## Derived` is for concrete next-run deltas.
   - Markdown artifacts are written under `memory/reflections/YYYY-MM-DD/`.
   - Filename uses high-resolution timestamp + agent/session token (with conflict-safe suffix), for example `HHMMSSmmm-agent-session[-xxxxxx].md`.
 - Store to LanceDB (optional):
@@ -188,12 +197,13 @@ Filters out low-quality content at both auto-capture and tool-store stages:
   - Only non-fallback reflections are eligible for LanceDB persistence.
   - Additional similarity dedupe is applied before write (`> 0.97` hit skips storing).
   - Reflections are stored with category `reflection`, and are displayed as `reflection:<scope>`.
+  - Stored metadata includes reflection execution fields such as `type`, `stage`, `sessionKey`, `sessionId`, `agentId`, `command`, `storedAt`, `invariants[]`, `derived[]`, `usedFallback`, and `errorSignals[]`.
 - Dedicated agent (optional): run reflection generation with another agent via `memoryReflection.agentId` (e.g. `memory-distiller`)
   - If configured `memoryReflection.agentId` is not found in `cfg.agents.list`, plugin logs a clear warning and falls back to runtime agent id.
   - For embedded runs, the plugin resolves the target agent's primary model ref (`provider/model`) and passes `provider` + `model` explicitly.
-- Inherit: `before_agent_start` injects `<inherited-rules>` from reflection invariants
-- Derive: `before_prompt_build` injects `<derived-focus>` and `<error-detected>` blocks
-  - `<derived-focus>` is sourced from the latest recent non-fallback reflection and skips placeholder lines.
+- Inherit: `before_agent_start` injects `<inherited-rules>` from stable reflection invariants.
+- Derive: `before_prompt_build` injects `<derived-focus>` and `<error-detected>` blocks.
+  - `<derived-focus>` is sourced only from the latest recent non-fallback reflection and skips placeholder lines.
   - Reflection-derived lines are extracted with `reflect|inherit|derive|change|apply` matching.
 - Error loop: `after_tool_call` captures and deduplicates tool error signatures for reminder/reflection context
 

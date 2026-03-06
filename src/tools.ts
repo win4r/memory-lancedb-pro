@@ -288,7 +288,11 @@ export function registerSelfImprovementExtractSkillTool(api: OpenClawPluginApi, 
 
           const summaryMatch = match[0].match(/### Summary\n([\s\S]*?)\n###/m);
           const summary = (summaryMatch?.[1] ?? "Summarize the source learning here.").trim();
-          const safeOutputDir = outputDir.replace(/^\/+/, "").replace(/\.\./g, "");
+          const safeOutputDir = outputDir
+            .replace(/\\/g, "/")
+            .split("/")
+            .filter((segment) => segment && segment !== "." && segment !== "..")
+            .join("/");
           const skillDir = join(workspaceDir, safeOutputDir || "skills", skillName);
           await mkdir(skillDir, { recursive: true });
           const skillPath = join(skillDir, "SKILL.md");

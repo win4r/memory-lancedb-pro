@@ -152,6 +152,10 @@ Query → BM25 FTS ─────┘
 - `sessionStrategy: "memoryReflection"`：使用插件的 memory-reflection hooks（需显式开启）
 - `sessionStrategy: "none"`：禁用本插件的会话策略 hooks
 - 兼容说明：`sessionMemory.enabled=true|false` 映射为 `systemSessionMemory|none`
+- 升级行为说明：
+  - 旧版插件式 session summary 行为不再作为隐式默认值。
+  - 升级后，如果你希望 `/new` / `/reset` 走插件反思链路，必须显式设置 `sessionStrategy: "memoryReflection"`。
+  - 保留 `sessionMemory.enabled: true` 时，现在会走更安全的兼容路径 `systemSessionMemory`，而不是静默切到新的 reflection pipeline。
 
 ### 8. Self-Improvement
 
@@ -159,6 +163,10 @@ Query → BM25 FTS ─────┘
 - `agent:bootstrap`：注入 `SELF_IMPROVEMENT_REMINDER.md` 到 bootstrap 上下文
 - `command:new` / `command:reset`：在会话重置前注入简短 `/note self-improvement ...` 提醒
 - 文件：确保 `.learnings/LEARNINGS.md`、`.learnings/ERRORS.md`、`.learnings/FEATURE_REQUESTS.md` 存在
+- 行为说明：
+  - 这条链路集成在插件生命周期内，可与 `sessionStrategy=systemSessionMemory` 共存。
+  - 它与 `memoryReflection` 是分开的：看到 self-improvement note 或 `.learnings/*` 写入，并不等于 reflection 存储已经开启。
+  - 治理类 extract/review 动作仍然是显式工具触发，不是后台自动触发。
 - 工具：
   - `self_improvement_log`：写入结构化 LRN/ERR/FEAT 条目
   - `self_improvement_review`：汇总治理 backlog（pending/high/promoted）
@@ -180,7 +188,8 @@ Query → BM25 FTS ─────┘
   - 若 embedded 路径失败，自动回退到 `openclaw agent --local --json`。
   - 仅当两者都失败时，才写入最小 fallback 反思文本。
 - Reflect 产物：
-  - 结构化输出的末节固定为 `## Invariants & Reflections`。
+  - 结构化输出应包含这些段落：`## Context`、`## Decisions (durable)`、`## User model deltas (about the human)`、`## Agent model deltas (about the assistant/system)`、`## Lessons & pitfalls (symptom / cause / fix / prevention)`、`## Learning governance candidates (.learnings / promotion / skill extraction)`、`## Open loops / next actions`、`## Retrieval tags / keywords`、`## Invariants`、`## Derived`。
+  - `## Invariants` 用于稳定规则沉淀；`## Derived` 用于下一次执行增量。
   - Markdown 产物写入 `memory/reflections/YYYY-MM-DD/`。
   - 文件名为高精度时间戳 + agent/session token（带冲突后缀），例如 `HHMMSSmmm-agent-session[-xxxxxx].md`。
 - 写入 LanceDB（可选）：
@@ -188,11 +197,12 @@ Query → BM25 FTS ─────┘
   - 只有非 fallback 反思才会进入 LanceDB 持久化流程。
   - 写入前会做相似度去重（命中 `> 0.97` 则跳过入库）。
   - 反思记忆写入时使用分类 `reflection`，展示标签为 `reflection:<scope>`。
+  - 写入的 metadata 会包含反思执行字段，例如 `type`、`stage`、`sessionKey`、`sessionId`、`agentId`、`command`、`storedAt`、`invariants[]`、`derived[]`、`usedFallback`、`errorSignals[]`。
 - 独立代理（可选）：通过 `memoryReflection.agentId` 指定用于反思生成的代理（例如 `memory-distiller`）
   - 若配置的 `memoryReflection.agentId` 不在 `cfg.agents.list` 中，插件会明确 `warn` 并回退到当前 runtime agent id。
   - 对 embedded 运行，插件会解析目标代理主模型引用（`provider/model`），并显式传入 `provider` 与 `model`。
-- Inherit：`before_agent_start` 注入 `<inherited-rules>`（稳定规则）
-- Derive：`before_prompt_build` 注入 `<derived-focus>` 与 `<error-detected>`
+- Inherit：`before_agent_start` 注入 `<inherited-rules>`，来源是稳定的 reflection invariants。
+- Derive：`before_prompt_build` 注入 `<derived-focus>` 与 `<error-detected>`。
   - `<derived-focus>` 仅取最近且非 fallback 的反思，并过滤占位行。
   - 派生行提取关键词：`reflect|inherit|derive|change|apply`。
 - 错误闭环：`after_tool_call` 捕获并去重工具错误签名，用于提醒与反思上下文

@@ -634,7 +634,7 @@ async function readSessionConversationForReflection(filePath: string, messageCou
   }
 }
 
-async function readSessionConversationWithResetFallback(sessionFilePath: string, messageCount: number): Promise<string | null> {
+export async function readSessionConversationWithResetFallback(sessionFilePath: string, messageCount: number): Promise<string | null> {
   const primary = await readSessionConversationForReflection(sessionFilePath, messageCount);
   if (primary) return primary;
 
@@ -2320,7 +2320,7 @@ const memoryLanceDBProPlugin = {
   },
 };
 
-function parsePluginConfig(value: unknown): PluginConfig {
+export function parsePluginConfig(value: unknown): PluginConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("memory-lancedb-pro config required");
   }

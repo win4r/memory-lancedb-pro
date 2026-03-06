@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.0
+
+- Feat: add integrated self-improvement governance flow (`agent:bootstrap`, `command:new/reset`, governance tools, and `.learnings` file bootstrap).
+- Feat: add `memoryReflection` session strategy with inheritance/derived injection, reflection persistence, and dedicated reflection-agent support.
+- Fix: keep session-strategy compatibility by mapping legacy `sessionMemory.enabled` to `systemSessionMemory` / `none` and trimming reflection input toward recent conversation tail.
+- Fix: retry early transient upstream reflection failures once and broaden session recovery search paths to real OpenClaw agent session directories.
+- Docs: update README / README_CN for session strategy, self-improvement, memoryReflection, mdMirror, and reflection fallback behavior.
+- Tests: add targeted coverage for reflection retry classification and session recovery path resolution.
+
+PRs: #43, #2
+
+---
+
 ## 1.0.32
 
 - Fix: strip OpenClaw `Conversation info` / `Sender` metadata noise before auto-capture matching and adaptive retrieval normalization, reducing false captures and noisy retrieval triggers.
