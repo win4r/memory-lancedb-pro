@@ -132,6 +132,122 @@ function resolveEnvVars(value: string): string {
   });
 }
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function getErrorStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const err = error as Record<string, any>;
+  if (typeof err.status === "number") return err.status;
+  if (typeof err.statusCode === "number") return err.statusCode;
+  if (err.error && typeof err.error === "object") {
+    if (typeof err.error.status === "number") return err.error.status;
+    if (typeof err.error.statusCode === "number") return err.error.statusCode;
+  }
+  return undefined;
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const err = error as Record<string, any>;
+  if (typeof err.code === "string") return err.code;
+  if (err.error && typeof err.error === "object" && typeof err.error.code === "string") {
+    return err.error.code;
+  }
+  return undefined;
+}
+
+function getProviderLabel(baseURL: string | undefined, model: string): string {
+  const base = baseURL || "";
+
+  if (base) {
+    if (/api\.jina\.ai/i.test(base)) return "Jina";
+    if (/localhost:11434|127\.0\.0\.1:11434|\/ollama\b/i.test(base)) return "Ollama";
+    if (/api\.openai\.com/i.test(base)) return "OpenAI";
+
+    try {
+      return new URL(base).host;
+    } catch {
+      return base;
+    }
+  }
+
+  if (/^jina-/i.test(model)) return "Jina";
+
+  return "embedding provider";
+}
+
+function isAuthError(error: unknown): boolean {
+  const status = getErrorStatus(error);
+  if (status === 401 || status === 403) return true;
+
+  const code = getErrorCode(error);
+  if (code && /invalid.*key|auth|forbidden|unauthorized/i.test(code)) return true;
+
+  const msg = getErrorMessage(error);
+  return /\b401\b|\b403\b|invalid api key|api key expired|expired api key|forbidden|unauthorized|authentication failed|access denied/i.test(msg);
+}
+
+function isNetworkError(error: unknown): boolean {
+  const code = getErrorCode(error);
+  if (code && /ECONNREFUSED|ECONNRESET|ENOTFOUND|EHOSTUNREACH|ETIMEDOUT/i.test(code)) {
+    return true;
+  }
+
+  const msg = getErrorMessage(error);
+  return /ECONNREFUSED|ECONNRESET|ENOTFOUND|EHOSTUNREACH|ETIMEDOUT|fetch failed|network error|socket hang up|connection refused|getaddrinfo/i.test(msg);
+}
+
+export function formatEmbeddingProviderError(
+  error: unknown,
+  opts: { baseURL?: string; model: string; mode?: "single" | "batch" },
+): string {
+  const raw = getErrorMessage(error).trim();
+  if (
+    raw.startsWith("Embedding provider authentication failed") ||
+    raw.startsWith("Embedding provider unreachable") ||
+    raw.startsWith("Failed to generate embedding from ") ||
+    raw.startsWith("Failed to generate batch embeddings from ")
+  ) {
+    return raw;
+  }
+
+  const status = getErrorStatus(error);
+  const code = getErrorCode(error);
+  const provider = getProviderLabel(opts.baseURL, opts.model);
+  const detail = raw.length > 0 ? raw : "unknown error";
+  const suffix = [status, code].filter(Boolean).join(" ");
+  const detailText = suffix ? `${suffix}: ${detail}` : detail;
+  const genericPrefix =
+    opts.mode === "batch"
+      ? `Failed to generate batch embeddings from ${provider}: `
+      : `Failed to generate embedding from ${provider}: `;
+
+  if (isAuthError(error)) {
+    let hint = `Check embedding.apiKey and endpoint for ${provider}.`;
+    if (provider === "Jina") {
+      hint +=
+        " If your Jina key expired or lost access, replace the key or switch to a local OpenAI-compatible endpoint such as Ollama (for example baseURL http://127.0.0.1:11434/v1, with a matching model and embedding.dimensions).";
+    } else if (provider === "Ollama") {
+      hint +=
+        " Ollama usually works with a dummy apiKey; verify the local server is running, the model is pulled, and embedding.dimensions matches the model output.";
+    }
+    return `Embedding provider authentication failed (${detailText}). ${hint}`;
+  }
+
+  if (isNetworkError(error)) {
+    let hint = `Verify the endpoint is reachable`;
+    if (opts.baseURL) {
+      hint += ` at ${opts.baseURL}`;
+    }
+    hint += ` and that model \"${opts.model}\" is available.`;
+    return `Embedding provider unreachable (${detailText}). ${hint}`;
+  }
+
+  return `${genericPrefix}${detailText}`;
+}
+
 export function getVectorDimensions(model: string, overrideDims?: number): number {
   if (overrideDims && overrideDims > 0) {
     return overrideDims;
@@ -161,6 +277,7 @@ export class Embedder {
   private readonly _cache: EmbeddingCache;
 
   private readonly _model: string;
+  private readonly _baseURL?: string;
   private readonly _taskQuery?: string;
   private readonly _taskPassage?: string;
   private readonly _normalized?: boolean;
@@ -176,6 +293,7 @@ export class Embedder {
     const resolvedKeys = apiKeys.map(k => resolveEnvVars(k));
 
     this._model = config.model;
+    this._baseURL = config.baseURL;
     this._taskQuery = config.taskQuery;
     this._taskPassage = config.taskPassage;
     this._normalized = config.normalized;
@@ -416,14 +534,21 @@ export class Embedder {
         } catch (chunkError) {
           // If chunking fails, throw the original error
           console.warn(`Chunking failed, using original error:`, chunkError);
-          throw new Error(`Failed to generate embedding: ${errorMsg}`, { cause: error });
+          const friendly = formatEmbeddingProviderError(error, {
+            baseURL: this._baseURL,
+            model: this._model,
+            mode: "single",
+          });
+          throw new Error(friendly, { cause: error });
         }
       }
 
-      if (error instanceof Error) {
-        throw new Error(`Failed to generate embedding: ${error.message}`, { cause: error });
-      }
-      throw new Error(`Failed to generate embedding: ${String(error)}`);
+      const friendly = formatEmbeddingProviderError(error, {
+        baseURL: this._baseURL,
+        model: this._model,
+        mode: "single",
+      });
+      throw new Error(friendly, { cause: error instanceof Error ? error : undefined });
     }
   }
 
@@ -534,14 +659,25 @@ export class Embedder {
 
           return results;
         } catch (chunkError) {
-          throw new Error(`Failed to embed documents after chunking attempt: ${errorMsg}`);
+          const friendly = formatEmbeddingProviderError(error, {
+            baseURL: this._baseURL,
+            model: this._model,
+            mode: "batch",
+          });
+          throw new Error(`Failed to embed documents after chunking attempt: ${friendly}`, {
+            cause: error instanceof Error ? error : undefined,
+          });
         }
       }
 
-      if (error instanceof Error) {
-        throw new Error(`Failed to generate batch embeddings: ${error.message}`, { cause: error });
-      }
-      throw new Error(`Failed to generate batch embeddings: ${String(error)}`);
+      const friendly = formatEmbeddingProviderError(error, {
+        baseURL: this._baseURL,
+        model: this._model,
+        mode: "batch",
+      });
+      throw new Error(friendly, {
+        cause: error instanceof Error ? error : undefined,
+      });
     }
   }
 
