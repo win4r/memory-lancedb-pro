@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.31
+
+- Fix: `memory-pro import` now preserves provided IDs and is idempotent (skips if ID already exists).
+
 ## 1.0.26
 
 **Access Reinforcement for Time Decay**
