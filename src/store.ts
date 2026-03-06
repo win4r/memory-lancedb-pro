@@ -37,6 +37,7 @@ export interface MemorySearchResult {
 export interface StoreConfig {
   dbPath: string;
   vectorDim: number;
+  storageOptions?: Record<string, string>; // Storage options for LanceDB connection
 }
 
 // ============================================================================
@@ -96,8 +97,8 @@ export function validateStoragePath(dbPath: string): string {
       } catch (err: any) {
         throw new Error(
           `dbPath "${dbPath}" is a symlink whose target does not exist.\n` +
-          `  Fix: Create the target directory, or update the symlink to point to a valid path.\n` +
-          `  Details: ${err.code || ""} ${err.message}`,
+            `  Fix: Create the target directory, or update the symlink to point to a valid path.\n` +
+            `  Details: ${err.code || ""} ${err.message}`,
         );
       }
     }
@@ -122,9 +123,9 @@ export function validateStoragePath(dbPath: string): string {
     } catch (err: any) {
       throw new Error(
         `Failed to create dbPath directory "${resolvedPath}".\n` +
-        `  Fix: Ensure the parent directory "${dirname(resolvedPath)}" exists and is writable,\n` +
-        `       or create it manually: mkdir -p "${resolvedPath}"\n` +
-        `  Details: ${err.code || ""} ${err.message}`,
+          `  Fix: Ensure the parent directory "${dirname(resolvedPath)}" exists and is writable,\n` +
+          `       or create it manually: mkdir -p "${resolvedPath}"\n` +
+          `  Details: ${err.code || ""} ${err.message}`,
       );
     }
   }
@@ -135,9 +136,9 @@ export function validateStoragePath(dbPath: string): string {
   } catch (err: any) {
     throw new Error(
       `dbPath directory "${resolvedPath}" is not writable.\n` +
-      `  Fix: Check permissions with: ls -la "${dirname(resolvedPath)}"\n` +
-      `       Or grant write access: chmod u+w "${resolvedPath}"\n` +
-      `  Details: ${err.code || ""} ${err.message}`,
+        `  Fix: Check permissions with: ls -la "${dirname(resolvedPath)}"\n` +
+        `       Or grant write access: chmod u+w "${resolvedPath}"\n` +
+        `  Details: ${err.code || ""} ${err.message}`,
     );
   }
 
@@ -157,8 +158,11 @@ export class MemoryStore {
   private ftsSupported = false;
   private ftsIndexCreated = false;
   private lastFtsError: string | null = null;
+  private readonly storageOptions: Record<string, string>;
 
-  constructor(private readonly config: StoreConfig) { }
+  constructor(private readonly config: StoreConfig) {
+    this.storageOptions = config.storageOptions || {};
+  }
 
   get dbPath(): string {
     return this.config.dbPath;
@@ -184,7 +188,7 @@ export class MemoryStore {
 
     let db: LanceDB.Connection;
     try {
-      db = await lancedb.connect(this.config.dbPath);
+      db = await lancedb.connect(this.config.dbPath, { storageOptions: this.storageOptions });
     } catch (err: any) {
       const code = err.code || "";
       const message = err.message || String(err);
