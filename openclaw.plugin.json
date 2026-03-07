@@ -61,9 +61,7 @@
             "description": "Enable automatic chunking for documents exceeding embedding context limits"
           }
         },
-        "required": [
-          "apiKey"
-        ]
+        "required": []
       },
       "dbPath": {
         "type": "string"
