@@ -410,11 +410,12 @@ openclaw config get plugins.slots.memory
   "dbPath": "~/.openclaw/memory/lancedb-pro",
   "autoCapture": true,
   "autoRecall": false,
+  "autoRecallMinLength": 8,
   "retrieval": {
     "mode": "hybrid",
     "vectorWeight": 0.7,
     "bm25Weight": 0.3,
-    "minScore": 0.3,
+    "minScore": 0.45,
     "rerank": "cross-encoder",
     "rerankApiKey": "${JINA_API_KEY}",
     "rerankModel": "jina-reranker-v3",
@@ -425,7 +426,7 @@ openclaw config get plugins.slots.memory
     "recencyWeight": 0.1,
     "filterNoise": true,
     "lengthNormAnchor": 500,
-    "hardMinScore": 0.35,
+    "hardMinScore": 0.55,
     "timeDecayHalfLifeDays": 60,
     "reinforcementFactor": 0.5,
     "maxHalfLifeMultiplier": 3
@@ -467,6 +468,30 @@ openclaw config get plugins.slots.memory
 ```
 
 </details>
+
+### Parameter Mapping Notes (avoid common misconfig)
+
+`memory-lancedb-pro` does **not** support `recallTopK` / `recallThreshold`.
+
+Use these equivalents instead:
+
+- `recallTopK` → `retrieval.candidatePoolSize`
+- `recallThreshold` → combine `retrieval.minScore` + `retrieval.hardMinScore`
+
+A practical starting point for Chinese chat workloads:
+
+```json
+{
+  "autoCapture": true,
+  "autoRecall": true,
+  "autoRecallMinLength": 8,
+  "retrieval": {
+    "candidatePoolSize": 20,
+    "minScore": 0.45,
+    "hardMinScore": 0.55
+  }
+}
+```
 
 ### Access Reinforcement (1.0.26)
 

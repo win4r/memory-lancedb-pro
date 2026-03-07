@@ -410,11 +410,12 @@ openclaw config get plugins.slots.memory
   "dbPath": "~/.openclaw/memory/lancedb-pro",
   "autoCapture": true,
   "autoRecall": false,
+  "autoRecallMinLength": 8,
   "retrieval": {
     "mode": "hybrid",
     "vectorWeight": 0.7,
     "bm25Weight": 0.3,
-    "minScore": 0.3,
+    "minScore": 0.45,
     "rerank": "cross-encoder",
     "rerankApiKey": "${JINA_API_KEY}",
     "rerankModel": "jina-reranker-v3",
@@ -465,6 +466,30 @@ openclaw config get plugins.slots.memory
 ```
 
 </details>
+
+### 参数映射提示（避免常见误配）
+
+`memory-lancedb-pro` **不支持** `recallTopK` / `recallThreshold` 这两个字段。
+
+如果你希望达到类似效果，请使用下列等价参数：
+
+- `recallTopK` → `retrieval.candidatePoolSize`
+- `recallThreshold` → 组合使用 `retrieval.minScore` + `retrieval.hardMinScore`
+
+实战上，中文对话可先从以下配置起步（再按误召回情况微调）：
+
+```json
+{
+  "autoCapture": true,
+  "autoRecall": true,
+  "autoRecallMinLength": 8,
+  "retrieval": {
+    "candidatePoolSize": 20,
+    "minScore": 0.45,
+    "hardMinScore": 0.55
+  }
+}
+```
 
 ### 访问强化（1.0.26）
 
