@@ -596,6 +596,12 @@ openclaw config get plugins.slots.memory
 }
 ```
 
+OpenClaw-specific defaults:
+
+- `autoCapture`: enabled by default
+- `embedding.chunking`: enabled by default and now wired through to the embedder runtime
+- `sessionMemory.enabled`: disabled by default; set it explicitly to `true` if you want the plugin to register the `/new` session-summary hook
+
 </details>
 
 ### Access Reinforcement (1.0.26)

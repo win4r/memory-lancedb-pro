@@ -35,7 +35,7 @@
     ]
   },
   "scripts": {
-    "test": "node test/cli-smoke.mjs && node test/retriever-rerank-regression.mjs && node test/smart-memory-lifecycle.mjs && node test/smart-extractor-branches.mjs"
+    "test": "node test/cli-smoke.mjs && node test/retriever-rerank-regression.mjs && node test/smart-memory-lifecycle.mjs && node test/smart-extractor-branches.mjs && node test/plugin-manifest-regression.mjs"
   },
   "devDependencies": {
     "commander": "^14.0.0",

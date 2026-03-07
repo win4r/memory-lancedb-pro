@@ -17,7 +17,6 @@ import { createScopeManager } from "./src/scopes.js";
 import { createMigrator } from "./src/migrate.js";
 import { registerAllMemoryTools } from "./src/tools.js";
 import { shouldSkipRetrieval } from "./src/adaptive-retrieval.js";
-import { AccessTracker } from "./src/access-tracker.js";
 import { createMemoryCLI } from "./cli.js";
 import { isNoise } from "./src/noise-filter.js";
 
@@ -48,6 +47,7 @@ interface PluginConfig {
     taskQuery?: string;
     taskPassage?: string;
     normalized?: boolean;
+    chunking?: boolean;
   };
   dbPath?: string;
   autoCapture?: boolean;
@@ -457,6 +457,7 @@ const memoryLanceDBProPlugin = {
       taskQuery: config.embedding.taskQuery,
       taskPassage: config.embedding.taskPassage,
       normalized: config.embedding.normalized,
+      chunking: config.embedding.chunking,
     });
     // Initialize decay engine
     const decayEngine = createDecayEngine({
@@ -1140,14 +1141,6 @@ const memoryLanceDBProPlugin = {
         backupTimer = setInterval(() => void runBackup(), BACKUP_INTERVAL_MS);
       },
       stop: async () => {
-        // Flush pending access reinforcement data before shutdown
-        try {
-          await accessTracker.flush();
-        } catch (err) {
-          api.logger.warn("memory-lancedb-pro: flush failed on stop:", err);
-        }
-        accessTracker.destroy();
-
         if (backupTimer) {
           clearInterval(backupTimer);
           backupTimer = null;
@@ -1222,6 +1215,10 @@ function parsePluginConfig(value: unknown): PluginConfig {
         typeof embedding.normalized === "boolean"
           ? embedding.normalized
           : undefined,
+      chunking:
+        typeof embedding.chunking === "boolean"
+          ? embedding.chunking
+          : undefined,
     },
     dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : undefined,
     autoCapture: cfg.autoCapture !== false,
@@ -1243,7 +1240,7 @@ function parsePluginConfig(value: unknown): PluginConfig {
       typeof cfg.sessionMemory === "object" && cfg.sessionMemory !== null
         ? {
             enabled:
-              (cfg.sessionMemory as Record<string, unknown>).enabled !== false,
+              (cfg.sessionMemory as Record<string, unknown>).enabled === true,
             messageCount:
               typeof (cfg.sessionMemory as Record<string, unknown>)
                 .messageCount === "number"

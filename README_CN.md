@@ -597,6 +597,12 @@ openclaw config get plugins.slots.memory
 }
 ```
 
+OpenClaw 默认行为补充：
+
+- `autoCapture`：默认开启
+- `embedding.chunking`：默认开启，且现在已经真正传递到 embedder 运行时
+- `sessionMemory.enabled`：默认关闭；如果你希望插件注册 `/new` 的 session-summary Hook，需要显式设置为 `true`
+
 </details>
 
 ### 访问强化（1.0.26）
