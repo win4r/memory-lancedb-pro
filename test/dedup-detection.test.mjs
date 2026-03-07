@@ -13,6 +13,8 @@ const jitiFactory = (await import("jiti")).default;
 const jiti = jitiFactory(import.meta.url, { interopDefault: true });
 const { MemoryStore, DEFAULT_DEDUP_CONFIG } = jiti("../src/store.ts");
 
+const testDirs = new Set();
+
 // ============================================================================
 // Mock Embedding Generator
 // ============================================================================
@@ -46,23 +48,6 @@ function mockEmbedding(text) {
   return vector.map(v => v / magnitude);
 }
 
-/**
- * Create a similar embedding to the original with controlled similarity.
- * Higher similarity = more similar vectors.
- */
-function similarEmbedding(original, similarity) {
-  // Add noise inversely proportional to similarity
-  const noiseScale = 1 - similarity;
-  const noisy = original.map(v => {
-    const noise = (Math.random() - 0.5) * 2 * noiseScale;
-    return v + noise;
-  });
-
-  // Normalize
-  const magnitude = Math.sqrt(noisy.reduce((sum, v) => sum + v * v, 0));
-  return noisy.map(v => v / magnitude);
-}
-
 // ============================================================================
 // Test Helpers
 // ============================================================================
@@ -70,6 +55,7 @@ function similarEmbedding(original, similarity) {
 function createTestStore(dedupConfig = {}) {
   const testDir = join(tmpdir(), `dedup-test-${randomUUID()}`);
   mkdirSync(testDir, { recursive: true });
+  testDirs.add(testDir);
 
   return new MemoryStore({
     dbPath: testDir,
@@ -79,7 +65,15 @@ function createTestStore(dedupConfig = {}) {
 }
 
 async function cleanup(store) {
-  // Cleanup handled by store if available
+  // Cleanup temp directories
+  for (const dir of testDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      // Ignore cleanup errors
+    }
+  }
+  testDirs.clear();
 }
 
 // ============================================================================
@@ -88,7 +82,7 @@ async function cleanup(store) {
 
 async function test_identical_text_detected_as_duplicate() {
   console.log("TEST: identical text detected as duplicate");
-  const store = await createTestStore();
+  const store = createTestStore();
 
   const text = "OpenClaw supports Discord and Telegram channels";
   const vector = mockEmbedding(text);
@@ -110,17 +104,16 @@ async function test_identical_text_detected_as_duplicate() {
   });
   assert.strictEqual(r2.status, "skipped", "Second store should be skipped");
   assert.strictEqual(r2.reason, "duplicate", "Reason should be duplicate");
-  assert.ok(r2.similarity >= 0.99, `Similarity should be >= 0.99, got ${r2.similarity}`);
+  assert.ok(r2.similarity >= 0.98, `Similarity should be >= 0.98, got ${r2.similarity}`);
   assert.ok(r2.similarTo, "Should have similarTo info");
   assert.strictEqual(r2.similarTo.scope, "test", "Should show matching scope");
 
   console.log("  ✅ PASS");
-  await cleanup(store);
 }
 
 async function test_similar_text_detected() {
-  console.log("TEST: similar text (>92%) detected");
-  const store = await createTestStore();
+  console.log("TEST: similar text (>98%) detected");
+  const store = createTestStore();
 
   const text1 = "Redis is used for session caching in production";
   const vector1 = mockEmbedding(text1);
@@ -145,15 +138,14 @@ async function test_similar_text_detected() {
   });
 
   assert.strictEqual(r.status, "skipped", "Similar text should be skipped");
-  assert.ok(r.similarity >= 0.92, `Similarity should be >= 0.92, got ${r.similarity}`);
+  assert.ok(r.similarity >= 0.98, `Similarity should be >= 0.98, got ${r.similarity}`);
 
   console.log("  ✅ PASS");
-  await cleanup(store);
 }
 
 async function test_different_text_stored_normally() {
   console.log("TEST: different text stored normally");
-  const store = await createTestStore();
+  const store = createTestStore();
 
   const text1 = "Python is a programming language";
   const text2 = "TypeScript adds static typing to JavaScript";
@@ -176,12 +168,11 @@ async function test_different_text_stored_normally() {
   assert.strictEqual(r.reason, undefined, "Should not have reason");
 
   console.log("  ✅ PASS");
-  await cleanup(store);
 }
 
 async function test_force_bypasses_dedup() {
   console.log("TEST: force:true bypasses dedup");
-  const store = await createTestStore();
+  const store = createTestStore();
 
   const text = "Important config: API key is abc123";
   const vector = mockEmbedding(text);
@@ -202,12 +193,11 @@ async function test_force_bypasses_dedup() {
   assert.strictEqual(r.status, "stored", "Force should store duplicate");
 
   console.log("  ✅ PASS");
-  await cleanup(store);
 }
 
 async function test_scope_isolation() {
   console.log("TEST: scope isolation - different scopes allow duplicates");
-  const store = await createTestStore({ scopeMode: 'scope' });
+  const store = createTestStore({ scopeMode: 'scope' });
 
   const text = "User prefers dark mode";
   const vector = mockEmbedding(text);
@@ -228,12 +218,11 @@ async function test_scope_isolation() {
   assert.strictEqual(r.status, "stored", "Different scope should allow duplicate");
 
   console.log("  ✅ PASS");
-  await cleanup(store);
 }
 
 async function test_global_mode_cross_scope() {
   console.log("TEST: global mode - cross-scope dedup");
-  const store = await createTestStore({ scopeMode: 'global' });
+  const store = createTestStore({ scopeMode: 'global' });
 
   const text = "Shared configuration value";
   const vector = mockEmbedding(text);
@@ -253,12 +242,11 @@ async function test_global_mode_cross_scope() {
   assert.strictEqual(r.status, "skipped", "Global mode should dedup across scopes");
 
   console.log("  ✅ PASS");
-  await cleanup(store);
 }
 
 async function test_disabled_dedup() {
   console.log("TEST: dedup.enabled=false disables dedup");
-  const store = await createTestStore({ enabled: false });
+  const store = createTestStore({ enabled: false });
 
   const text = "Duplicate content test";
   const vector = mockEmbedding(text);
@@ -278,7 +266,33 @@ async function test_disabled_dedup() {
   assert.strictEqual(r.status, "stored", "Disabled dedup should store all");
 
   console.log("  ✅ PASS");
-  await cleanup(store);
+}
+
+async function test_category_isolation() {
+  console.log("TEST: category isolation - different categories allow duplicates");
+  const store = createTestStore();
+
+  const text = "User likes dark mode";
+  const vector = mockEmbedding(text);
+
+  await store.store({
+    text,
+    vector,
+    scope: "test",
+    category: "preference",
+  });
+
+  const r = await store.store({
+    text,
+    vector,
+    scope: "test",
+    category: "fact",
+  });
+
+  // Different category = should be stored (not a duplicate)
+  assert.strictEqual(r.status, "stored", "Different category should allow duplicate");
+
+  console.log("  ✅ PASS");
 }
 
 // ============================================================================
@@ -296,6 +310,7 @@ async function run() {
     test_scope_isolation,
     test_global_mode_cross_scope,
     test_disabled_dedup,
+    test_category_isolation,
   ];
 
   let passed = 0;
@@ -307,9 +322,13 @@ async function run() {
       passed++;
     } catch (err) {
       console.log(`  ❌ FAIL: ${err.message}`);
+      console.log(err.stack);
       failed++;
     }
   }
+
+  // Cleanup after all tests
+  await cleanup(null);
 
   console.log(`\n=== Results: ${passed}/${tests.length} passed ===\n`);
   process.exit(failed > 0 ? 1 : 0);

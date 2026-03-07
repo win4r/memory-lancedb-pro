@@ -97,6 +97,13 @@ interface PluginConfig {
     dedupeErrorSignals?: boolean;
   };
   mdMirror?: { enabled?: boolean; dir?: string };
+  storage?: {
+    dedup?: {
+      enabled?: boolean;
+      threshold?: number;
+      scopeMode?: "scope" | "global";
+    };
+  };
 }
 
 type ReflectionThinkLevel = "off" | "minimal" | "low" | "medium" | "high";
@@ -1216,8 +1223,12 @@ const memoryLanceDBProPlugin = {
       config.embedding.dimensions,
     );
 
-    // Initialize core components
-    const store = new MemoryStore({ dbPath: resolvedDbPath, vectorDim });
+    // Initialize core components with dedup config
+    const store = new MemoryStore({
+      dbPath: resolvedDbPath,
+      vectorDim,
+      dedup: config.storage?.dedup,
+    });
     const embedder = createEmbedder({
       provider: "openai-compatible",
       apiKey: config.embedding.apiKey,

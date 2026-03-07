@@ -49,7 +49,7 @@ export interface DedupConfig {
 
 export const DEFAULT_DEDUP_CONFIG: Required<DedupConfig> = {
   enabled: true,
-  threshold: 0.92,
+  threshold: 0.98, // High threshold to only skip near-identical content
   scopeMode: 'scope',
 };
 
@@ -65,21 +65,8 @@ export interface StoreParams {
   category?: MemoryEntry["category"];
   scope?: string;
   importance?: number;
-  metadata?: Record<string, unknown>;
+  metadata?: string; // JSON string (backward compatible with existing callers)
   force?: boolean; // Force store even if duplicate detected
-}
-
-export interface StoreResult {
-  id: string;
-  status: 'stored' | 'skipped';
-  reason?: 'duplicate';
-  similarity?: number;
-  similarTo?: {
-    id: string;
-    text: string;
-    timestamp: number;
-    scope: string;
-  };
 }
 
 export interface StoreResult {
@@ -235,6 +222,7 @@ export class MemoryStore {
     vector: number[],
     config: Required<DedupConfig>,
     currentScope?: string,
+    category?: MemoryEntry["category"],
   ): Promise<{ entry: MemoryEntry; similarity: number } | null> {
     try {
       // Build scope filter based on scopeMode
@@ -245,8 +233,13 @@ export class MemoryStore {
       // Vector search for top-1 most similar (low minScore to catch near-duplicates)
       const results = await this.vectorSearch(vector, 1, 0.1, scopeFilter);
 
-      // Check threshold
+      // Check threshold AND category match
+      // Same text in different categories is NOT a duplicate
       if (results.length > 0 && results[0].score >= config.threshold) {
+        // If category is specified, only consider it a duplicate if categories match
+        if (category && results[0].entry.category !== category) {
+          return null;
+        }
         return {
           entry: results[0].entry,
           similarity: results[0].score,
@@ -257,10 +250,7 @@ export class MemoryStore {
 
     } catch (err) {
       // Fail-open: dedup failure should not block storage
-      console.warn({
-        event: 'dedup_check_failed',
-        error: err instanceof Error ? err.message : String(err),
-      });
+      console.warn(`memory-lancedb-pro: dedup_check_failed error=${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
   }
@@ -414,23 +404,16 @@ export class MemoryStore {
           params.vector,
           dedupConfig,
           scope,
+          params.category,
         );
 
         if (dup) {
           // Log the skip
-          console.info({
-            event: 'memory_dedup_skip',
-            similarity: dup.similarity,
-            threshold: dedupConfig.threshold,
-            scopeMode: dedupConfig.scopeMode,
-            newText: params.text.slice(0, 50),
-            existingId: dup.entry.id,
-            existingScope: dup.entry.scope,
-          });
+          console.info(`memory-lancedb-pro: memory_dedup_skip similarity=${dup.similarity.toFixed(2)} threshold=${dedupConfig.threshold} scopeMode=${dedupConfig.scopeMode} newText="${params.text.slice(0, 50)}" existingId=${dup.entry.id} existingScope=${dup.entry.scope}`);
 
           // Return skipped result
           return {
-            id: randomUUID(),
+            id: dup.entry.id, // Return existing ID, not a new random one
             status: 'skipped',
             reason: 'duplicate',
             similarity: dup.similarity,
@@ -454,7 +437,7 @@ export class MemoryStore {
       scope,
       importance: params.importance ?? 0.7,
       timestamp: Date.now(),
-      metadata: params.metadata ? JSON.stringify(params.metadata) : "{}",
+      metadata: params.metadata || "{}", // Already a JSON string (backward compat)
     };
 
     try {

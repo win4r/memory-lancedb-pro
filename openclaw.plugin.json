@@ -233,6 +233,36 @@
           }
         }
       },
+      "storage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dedup": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Enable duplicate detection before storage"
+              },
+              "threshold": {
+                "type": "number",
+                "minimum": 0.8,
+                "maximum": 1,
+                "default": 0.98,
+                "description": "Similarity threshold for duplicate detection. Higher = stricter (only near-identical content is skipped)"
+              },
+              "scopeMode": {
+                "type": "string",
+                "enum": ["scope", "global"],
+                "default": "scope",
+                "description": "'scope' = dedup within same scope only, 'global' = dedup across all scopes"
+              }
+            }
+          }
+        }
+      },
       "sessionMemory": {
         "type": "object",
         "additionalProperties": false,
@@ -634,6 +664,20 @@
     "mdMirror.dir": {
       "label": "Mirror Fallback Directory",
       "help": "Fallback directory when agent workspace mapping is unavailable",
+      "advanced": true
+    },
+    "storage.dedup.enabled": {
+      "label": "Dedup Detection",
+      "help": "Enable duplicate detection to skip storing near-identical memories"
+    },
+    "storage.dedup.threshold": {
+      "label": "Dedup Threshold",
+      "help": "Similarity threshold (0-1). Higher = stricter. Default 0.0 only skips near-identical content.",
+      "advanced": true
+    },
+    "storage.dedup.scopeMode": {
+      "label": "Dedup Scope Mode",
+      "help": "'scope' = dedup within scope, 'global' = dedup across all scopes",
       "advanced": true
     }
   }
