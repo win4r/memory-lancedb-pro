@@ -52,4 +52,15 @@ describe("sessionStrategy legacy compatibility mapping", () => {
     const parsed = parsePluginConfig(baseConfig());
     assert.equal(parsed.sessionStrategy, "systemSessionMemory");
   });
+
+  it("preserves embedding.chunking when explicitly configured", () => {
+    const parsed = parsePluginConfig({
+      ...baseConfig(),
+      embedding: {
+        ...baseConfig().embedding,
+        chunking: false,
+      },
+    });
+    assert.equal(parsed.embedding.chunking, false);
+  });
 });

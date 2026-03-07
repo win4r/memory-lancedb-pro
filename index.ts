@@ -42,6 +42,7 @@ interface PluginConfig {
     taskQuery?: string;
     taskPassage?: string;
     normalized?: boolean;
+    chunking?: boolean;
   };
   dbPath?: string;
   autoCapture?: boolean;
@@ -1226,6 +1227,7 @@ const memoryLanceDBProPlugin = {
       taskQuery: config.embedding.taskQuery,
       taskPassage: config.embedding.taskPassage,
       normalized: config.embedding.normalized,
+      chunking: config.embedding.chunking,
     });
     const retriever = createRetriever(store, embedder, {
       ...DEFAULT_RETRIEVAL_CONFIG,
@@ -2411,6 +2413,10 @@ export function parsePluginConfig(value: unknown): PluginConfig {
       normalized:
         typeof embedding.normalized === "boolean"
           ? embedding.normalized
+          : undefined,
+      chunking:
+        typeof embedding.chunking === "boolean"
+          ? embedding.chunking
           : undefined,
     },
     dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : undefined,
