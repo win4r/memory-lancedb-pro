@@ -233,7 +233,7 @@ Filters out low-quality content at both auto-capture and tool-store stages:
 
 ### Prevent memories from showing up in replies
 
-Sometimes the model may accidentally echo the injected `<relevant-memories>` block in its response.
+Sometimes the model may accidentally echo injected memory context in its response. The safer default is now `autoRecallFormat: "plain"`, which avoids the legacy XML wrapper.
 
 **Option A (recommended): disable auto-recall**
 

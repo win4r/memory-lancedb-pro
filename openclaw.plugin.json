@@ -97,6 +97,12 @@
         "default": 15,
         "description": "Minimum prompt length (in characters) to trigger auto-recall. Prompts shorter than this are skipped. Default: 15 for English, 6 for CJK."
       },
+      "autoRecallFormat": {
+        "type": "string",
+        "enum": ["plain", "xml"],
+        "default": "plain",
+        "description": "How auto-recalled memories are injected into context. `plain` is safer and less likely to be echoed verbatim; `xml` preserves the legacy <relevant-memories> wrapper."
+      },
       "autoRecallMinRepeated": {
         "type": "integer",
         "minimum": 0,
