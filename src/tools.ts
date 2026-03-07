@@ -545,33 +545,40 @@ export function registerMemoryStoreTool(
       const agentId = resolveAgentId((toolCtx as any)?.agentId, context.agentId) ?? "main";
       return {
         name: "memory_store",
-      label: "Memory Store",
-      description:
-        "Save important information in long-term memory. Use for preferences, facts, decisions, and other notable information.",
-      parameters: Type.Object({
-        text: Type.String({ description: "Information to remember" }),
-        importance: Type.Optional(
-          Type.Number({ description: "Importance score 0-1 (default: 0.7)" }),
-        ),
-        category: Type.Optional(stringEnum(MEMORY_CATEGORIES)),
-        scope: Type.Optional(
-          Type.String({
-            description: "Memory scope (optional, defaults to agent scope)",
-          }),
-        ),
-      }),
-      async execute(_toolCallId, params) {
-        const {
-          text,
-          importance = 0.7,
-          category = "other",
-          scope,
-        } = params as {
-          text: string;
-          importance?: number;
-          category?: string;
-          scope?: string;
-        };
+        label: "Memory Store",
+        description:
+          "Save important information in long-term memory. Use for preferences, facts, decisions, and other notable information.",
+        parameters: Type.Object({
+          text: Type.String({ description: "Information to remember" }),
+          importance: Type.Optional(
+            Type.Number({ description: "Importance score 0-1 (default: 0.7)" }),
+          ),
+          category: Type.Optional(stringEnum(MEMORY_CATEGORIES)),
+          scope: Type.Optional(
+            Type.String({
+              description: "Memory scope (optional, defaults to agent scope)",
+            }),
+          ),
+          force: Type.Optional(
+            Type.Boolean({
+              description: "Force store even if duplicate detected (default: false)",
+            }),
+          ),
+        }),
+        async execute(_toolCallId, params) {
+          const {
+            text,
+            importance = 0.7,
+            category = "other",
+            scope,
+            force,
+          } = params as {
+            text: string;
+            importance?: number;
+            category?: string;
+            scope?: string;
+            force?: boolean;
+          };
 
         try {
           // Determine target scope
@@ -609,49 +616,39 @@ export function registerMemoryStoreTool(
           const safeImportance = clamp01(importance, 0.7);
           const vector = await context.embedder.embedPassage(text);
 
-          // Check for duplicates using raw vector similarity (bypasses importance/recency weighting)
-          // Fail-open by design: dedup must never block a legitimate memory write.
-          let existing: Awaited<ReturnType<typeof context.store.vectorSearch>> = [];
-          try {
-            existing = await context.store.vectorSearch(vector, 1, 0.1, [
-              targetScope,
-            ]);
-          } catch (err) {
-            console.warn(
-              `memory-lancedb-pro: duplicate pre-check failed, continue store: ${String(err)}`,
-            );
-          }
-
-          if (existing.length > 0 && existing[0].score > 0.98) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Similar memory already exists: "${existing[0].entry.text}"`,
-                },
-              ],
-              details: {
-                action: "duplicate",
-                existingId: existing[0].entry.id,
-                existingText: existing[0].entry.text,
-                existingScope: existing[0].entry.scope,
-                similarity: existing[0].score,
-              },
-            };
-          }
-
-          const entry = await context.store.store({
+          // Store with dedup handled internally by MemoryStore
+          const result = await context.store.store({
             text,
             vector,
             importance: safeImportance,
             category: category as any,
             scope: targetScope,
+            force,
           });
+
+          // Handle skipped (duplicate detected)
+          if (result.status === 'skipped') {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Similar memory already exists: "${result.similarTo?.text}"`,
+                },
+              ],
+              details: {
+                action: "duplicate",
+                existingId: result.similarTo?.id,
+                existingText: result.similarTo?.text,
+                existingScope: result.similarTo?.scope,
+                similarity: result.similarity,
+              },
+            };
+          }
 
           // Dual-write to Markdown mirror if enabled
           if (context.mdMirror) {
             await context.mdMirror(
-              { text, category: category as string, scope: targetScope, timestamp: entry.timestamp },
+              { text, category: category as string, scope: targetScope, timestamp: Date.now() },
               { source: "memory_store", agentId },
             );
           }
@@ -665,10 +662,10 @@ export function registerMemoryStoreTool(
             ],
             details: {
               action: "created",
-              id: entry.id,
-              scope: entry.scope,
-              category: entry.category,
-              importance: entry.importance,
+              id: result.id,
+              scope: targetScope,
+              category,
+              importance: safeImportance,
             },
           };
         } catch (error) {
