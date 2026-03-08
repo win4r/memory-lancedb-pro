@@ -34,6 +34,12 @@ const {
   loadAgentDerivedRowsWithScoresFromEntries,
   loadReflectionMappedRowsFromEntries,
 } = jiti("../src/reflection-store.ts");
+const { rankDynamicReflectionRecallFromEntries } = jiti("../src/reflection-recall.ts");
+const {
+  createDynamicRecallSessionState,
+  clearDynamicRecallSessionState,
+  orchestrateDynamicRecall,
+} = jiti("../src/recall-engine.ts");
 const {
   REFLECTION_INVARIANT_DECAY_MIDPOINT_DAYS,
   REFLECTION_INVARIANT_DECAY_K,
@@ -43,7 +49,8 @@ const {
   REFLECTION_DERIVED_BASE_WEIGHT,
 } = jiti("../src/reflection-item-store.ts");
 const { buildReflectionMappedMetadata } = jiti("../src/reflection-mapped-metadata.ts");
-const { REFLECTION_FALLBACK_SCORE_FACTOR } = jiti("../src/reflection-ranking.ts");
+const { REFLECTION_FALLBACK_SCORE_FACTOR, computeReflectionScore } = jiti("../src/reflection-ranking.ts");
+const { MemoryRetriever } = jiti("../src/retriever.ts");
 
 function messageLine(role, text, ts) {
   return JSON.stringify({
@@ -758,6 +765,169 @@ describe("memory reflection", () => {
     });
   });
 
+  describe("dynamic reflection recall ranking", () => {
+    it("filters stale rows by time window", () => {
+      const now = Date.UTC(2026, 2, 8);
+      const day = 24 * 60 * 60 * 1000;
+      const entries = [
+        makeEntry({
+          timestamp: now - 2 * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "invariant",
+            agentId: "main",
+            storedAt: now - 2 * day,
+            decayMidpointDays: 45,
+            decayK: 0.22,
+            baseWeight: 1.1,
+            quality: 1,
+          },
+        }),
+        makeEntry({
+          timestamp: now - 80 * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "invariant",
+            agentId: "main",
+            storedAt: now - 80 * day,
+            decayMidpointDays: 45,
+            decayK: 0.22,
+            baseWeight: 1.1,
+            quality: 1,
+          },
+        }),
+      ];
+      entries[0].text = "Keep post-checks mandatory after infra edits.";
+      entries[1].text = "Stale legacy guidance.";
+
+      const rows = rankDynamicReflectionRecallFromEntries(entries, {
+        agentId: "main",
+        includeKinds: ["invariant"],
+        maxAgeMs: 30 * day,
+        maxEntriesPerKey: 10,
+        topK: 6,
+        minScore: 0,
+        now,
+      });
+
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].text, "Keep post-checks mandatory after infra edits.");
+    });
+
+    it("caps dynamic aggregation to the most recent 10 entries per normalized key", () => {
+      const now = Date.UTC(2026, 2, 8);
+      const entries = Array.from({ length: 12 }, () =>
+        makeEntry({
+          timestamp: now,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "invariant",
+            agentId: "main",
+            storedAt: now,
+            decayMidpointDays: 45,
+            decayK: 0.22,
+            baseWeight: 1.1,
+            quality: 1,
+          },
+        })
+      );
+      for (const entry of entries) {
+        entry.text = "Always verify mount + DNS health after service changes.";
+      }
+
+      const capped = rankDynamicReflectionRecallFromEntries(entries, {
+        agentId: "main",
+        includeKinds: ["invariant"],
+        maxAgeMs: 365 * 24 * 60 * 60 * 1000,
+        maxEntriesPerKey: 10,
+        topK: 6,
+        minScore: 0,
+        now,
+      });
+      const uncapped = rankDynamicReflectionRecallFromEntries(entries, {
+        agentId: "main",
+        includeKinds: ["invariant"],
+        maxAgeMs: 365 * 24 * 60 * 60 * 1000,
+        maxEntriesPerKey: 20,
+        topK: 6,
+        minScore: 0,
+        now,
+      });
+
+      assert.equal(capped[0].repeatCount, 10);
+      assert.equal(uncapped[0].repeatCount, 12);
+      assert.ok(uncapped[0].score > capped[0].score);
+
+      const singleScore = computeReflectionScore({
+        ageDays: 0,
+        midpointDays: 45,
+        k: 0.22,
+        baseWeight: 1.1,
+        quality: 1,
+        usedFallback: false,
+      });
+      assert.equal(capped[0].score, Number((singleScore * 10).toFixed(6)));
+    });
+  });
+
+  describe("dynamic recall session state hygiene", () => {
+    it("clears per-session state so repeated-injection guard resets after session_end cleanup", async () => {
+      const state = createDynamicRecallSessionState({ maxSessions: 16 });
+      const run = () => orchestrateDynamicRecall({
+        channelName: "unit-dynamic-recall",
+        prompt: "Need targeted recall",
+        minPromptLength: 1,
+        minRepeated: 2,
+        topK: 1,
+        sessionId: "session-a",
+        state,
+        outputTag: "relevant-memories",
+        headerLines: [],
+        loadCandidates: async () => [{ id: "rule-a", text: "Always verify post-checks.", score: 0.9 }],
+        formatLine: (candidate) => candidate.text,
+      });
+
+      const first = await run();
+      assert.ok(first);
+
+      const second = await run();
+      assert.equal(second, undefined);
+
+      clearDynamicRecallSessionState(state, "session-a");
+
+      const third = await run();
+      assert.ok(third);
+    });
+
+    it("bounds tracked sessions by maxSessions to avoid unbounded growth", async () => {
+      const state = createDynamicRecallSessionState({ maxSessions: 2 });
+      const run = (sessionId) => orchestrateDynamicRecall({
+        channelName: "unit-dynamic-recall",
+        prompt: "Need targeted recall",
+        minPromptLength: 1,
+        minRepeated: 0,
+        topK: 1,
+        sessionId,
+        state,
+        outputTag: "relevant-memories",
+        headerLines: [],
+        loadCandidates: async () => [{ id: "rule-a", text: "Keep DNS checks in post-flight.", score: 0.9 }],
+        formatLine: (candidate) => candidate.text,
+      });
+
+      await run("session-a");
+      await run("session-b");
+      await run("session-c");
+
+      assert.equal(state.turnCounterBySession.size, 2);
+      assert.equal(state.historyBySession.size, 2);
+      assert.equal(state.updatedAtBySession.size, 2);
+      assert.equal(state.turnCounterBySession.has("session-a"), false);
+      assert.equal(state.historyBySession.has("session-a"), false);
+      assert.equal(state.updatedAtBySession.has("session-a"), false);
+    });
+  });
+
   describe("sessionStrategy legacy compatibility mapping", () => {
     it("maps legacy sessionMemory.enabled=true to systemSessionMemory", () => {
       const parsed = parsePluginConfig({
@@ -787,6 +957,47 @@ describe("memory reflection", () => {
     it("defaults to systemSessionMemory when neither field is set", () => {
       const parsed = parsePluginConfig(baseConfig());
       assert.equal(parsed.sessionStrategy, "systemSessionMemory");
+    });
+
+    it("defaults auto-recall category allowlist to include other while keeping reflection excluded", () => {
+      const parsed = parsePluginConfig(baseConfig());
+      assert.deepEqual(parsed.autoRecallCategories, ["preference", "fact", "decision", "entity", "other"]);
+      assert.equal(parsed.autoRecallExcludeReflection, true);
+    });
+
+    it("defaults Reflection-Recall mode to fixed for compatibility", () => {
+      const parsed = parsePluginConfig({
+        ...baseConfig(),
+        sessionStrategy: "memoryReflection",
+      });
+      assert.equal(parsed.memoryReflection.recall.mode, "fixed");
+      assert.equal(parsed.memoryReflection.recall.topK, 6);
+    });
+
+    it("parses dynamic Reflection-Recall config fields", () => {
+      const parsed = parsePluginConfig({
+        ...baseConfig(),
+        memoryReflection: {
+          recall: {
+            mode: "dynamic",
+            topK: 9,
+            includeKinds: ["invariant", "derived"],
+            maxAgeDays: 14,
+            maxEntriesPerKey: 7,
+            minRepeated: 3,
+            minScore: 0.22,
+            minPromptLength: 12,
+          },
+        },
+      });
+      assert.equal(parsed.memoryReflection.recall.mode, "dynamic");
+      assert.equal(parsed.memoryReflection.recall.topK, 9);
+      assert.deepEqual(parsed.memoryReflection.recall.includeKinds, ["invariant", "derived"]);
+      assert.equal(parsed.memoryReflection.recall.maxAgeDays, 14);
+      assert.equal(parsed.memoryReflection.recall.maxEntriesPerKey, 7);
+      assert.equal(parsed.memoryReflection.recall.minRepeated, 3);
+      assert.equal(parsed.memoryReflection.recall.minScore, 0.22);
+      assert.equal(parsed.memoryReflection.recall.minPromptLength, 12);
     });
   });
 
@@ -956,6 +1167,182 @@ describe("memory reflection", () => {
       assert.match(promptResult.prependContext, /<error-detected>/);
       assert.match(promptResult.prependContext, /\[shell\]/);
       assert.doesNotMatch(promptResult.prependContext, /<derived-focus>/);
+    });
+  });
+
+  describe("reflection-recall and auto-recall coexistence", () => {
+    let workspaceDir;
+    let originalList;
+    let originalRetrieve;
+    let harness;
+
+    beforeEach(() => {
+      workspaceDir = mkdtempSync(path.join(tmpdir(), "reflection-recall-dynamic-test-"));
+      originalList = MemoryStore.prototype.list;
+      originalRetrieve = MemoryRetriever.prototype.retrieve;
+
+      const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+      const day = 24 * 60 * 60 * 1000;
+      const reflectionEntries = Array.from({ length: 8 }, (_, i) =>
+        makeEntry({
+          timestamp: now - i * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "invariant",
+            agentId: "main",
+            storedAt: now - i * day,
+            decayMidpointDays: 45,
+            decayK: 0.22,
+            baseWeight: 1.1,
+            quality: 1,
+          },
+        })
+      );
+      reflectionEntries.forEach((entry, idx) => {
+        entry.text = `Dynamic reflection rule ${idx + 1}`;
+      });
+      MemoryStore.prototype.list = async (_scopeFilter, category) => {
+        if (category === "reflection") return reflectionEntries;
+        return reflectionEntries;
+      };
+
+      MemoryRetriever.prototype.retrieve = async () => [
+        {
+          entry: {
+            id: "auto-fact-1",
+            text: "User prefers concise incident updates.",
+            category: "fact",
+            scope: "global",
+            timestamp: now - 1 * day,
+            vector: [],
+            importance: 0.8,
+            metadata: "{}",
+          },
+          score: 0.91,
+          sources: {},
+        },
+        {
+          entry: {
+            id: "auto-reflection-1",
+            text: "Reflection row that should stay out of relevant-memories.",
+            category: "reflection",
+            scope: "global",
+            timestamp: now - 1 * day,
+            vector: [],
+            importance: 0.8,
+            metadata: "{}",
+          },
+          score: 0.88,
+          sources: {},
+        },
+        {
+          entry: {
+            id: "auto-decision-1",
+            text: "Decide to verify services after config edits.",
+            category: "decision",
+            scope: "global",
+            timestamp: now - 2 * day,
+            vector: [],
+            importance: 0.8,
+            metadata: "{}",
+          },
+          score: 0.85,
+          sources: {},
+        },
+      ];
+
+      harness = createPluginApiHarness({
+        resolveRoot: workspaceDir,
+        pluginConfig: {
+          embedding: { apiKey: "test-api-key" },
+          autoCapture: false,
+          autoRecall: true,
+          autoRecallTopK: 2,
+          autoRecallExcludeReflection: true,
+          autoRecallMinLength: 6,
+          sessionStrategy: "memoryReflection",
+          selfImprovement: {
+            enabled: false,
+            beforeResetNote: false,
+            ensureLearningFiles: false,
+          },
+          memoryReflection: {
+            injectMode: "inheritance-only",
+            storeToLanceDB: false,
+            recall: {
+              mode: "dynamic",
+              topK: 4,
+              includeKinds: ["invariant"],
+              maxAgeDays: 45,
+              maxEntriesPerKey: 10,
+              minRepeated: 2,
+              minScore: 0,
+              minPromptLength: 6,
+            },
+          },
+        },
+      });
+      memoryLanceDBProPlugin.register(harness.api);
+    });
+
+    afterEach(() => {
+      MemoryStore.prototype.list = originalList;
+      MemoryRetriever.prototype.retrieve = originalRetrieve;
+      rmSync(workspaceDir, { recursive: true, force: true });
+    });
+
+    it("keeps fixed inherited-rules compatibility even when autoRecall is enabled", async () => {
+      const fixedHarness = createPluginApiHarness({
+        resolveRoot: workspaceDir,
+        pluginConfig: {
+          embedding: { apiKey: "test-api-key" },
+          autoCapture: false,
+          autoRecall: true,
+          autoRecallTopK: 1,
+          sessionStrategy: "memoryReflection",
+          selfImprovement: { enabled: false, beforeResetNote: false, ensureLearningFiles: false },
+          memoryReflection: {
+            injectMode: "inheritance-only",
+            storeToLanceDB: false,
+            recall: { mode: "fixed" },
+          },
+        },
+      });
+      memoryLanceDBProPlugin.register(fixedHarness.api);
+
+      const hooks = fixedHarness.eventHandlers.get("before_agent_start") || [];
+      const outputs = await Promise.all(hooks.map((hook) => hook.handler(
+        { prompt: "Please recall relevant constraints for this task." },
+        { sessionId: "fixed-s1", sessionKey: "agent:main:session:fixed-s1", agentId: "main" }
+      )));
+      const inherited = outputs.find((result) => result?.prependContext?.includes("<inherited-rules>"));
+      assert.ok(inherited);
+      assert.match(inherited.prependContext, /Dynamic reflection rule 1|Stable rules inherited from memory-lancedb-pro reflections\./);
+    });
+
+    it("keeps dynamic reflection top-k independent from relevant-memories top-k and excludes reflection rows from auto-recall", async () => {
+      const hooks = harness.eventHandlers.get("before_agent_start") || [];
+      assert.equal(hooks.length, 2);
+
+      const outputs = await Promise.all(hooks.map((hook) => hook.handler(
+        { prompt: "Need a concise plan and recall prior decisions for this deploy?" },
+        { sessionId: "s-dyn", sessionKey: "agent:main:session:s-dyn", agentId: "main" }
+      )));
+
+      const relevant = outputs.find((result) => result?.prependContext?.includes("<relevant-memories>"));
+      const inherited = outputs.find((result) => result?.prependContext?.includes("<inherited-rules>"));
+      assert.ok(relevant);
+      assert.ok(inherited);
+
+      const relevantCount = (relevant.prependContext.match(/^- \[/gm) || []).length;
+      const inheritedCount = (inherited.prependContext.match(/^\d+\.\s/gm) || []).length;
+      assert.equal(relevantCount, 2);
+      assert.equal(inheritedCount, 4);
+
+      assert.doesNotMatch(relevant.prependContext, /auto-reflection-1|Reflection row that should stay out of relevant-memories\./);
+      assert.match(relevant.prependContext, /User prefers concise incident updates\./);
+      assert.match(relevant.prependContext, /Decide to verify services after config edits\./);
+      assert.match(inherited.prependContext, /Dynamic reflection rule 1/);
     });
   });
 });
