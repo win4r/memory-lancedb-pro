@@ -231,6 +231,24 @@ function parseNumber(value: unknown): number | undefined {
   return undefined;
 }
 
+function parseStringList(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    const normalized = value
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    return normalized.length > 0 ? [...new Set(normalized)] : undefined;
+  }
+  if (typeof value === "string") {
+    const normalized = value
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    return normalized.length > 0 ? [...new Set(normalized)] : undefined;
+  }
+  return undefined;
+}
+
 function asNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -913,6 +931,10 @@ const memoryLanceDBProPlugin = {
         scopeManager,
         migrator,
         embedder,
+        graphitiBridge,
+        graphitiSync,
+        graphitiConfig: config.graphiti,
+        graphInferenceRun: runGraphInferenceJob,
       }),
       { commands: ["memory-pro"] },
     );
@@ -2576,6 +2598,8 @@ export function parsePluginConfig(value: unknown): PluginConfig {
             maxMemories: Math.min(1000, Math.max(20, maxMemories)),
             minConfidence: Math.min(1, Math.max(0, minConfidenceRaw ?? 0.62)),
             maxScopes: Math.min(20, Math.max(1, maxScopes)),
+            includeScopes: parseStringList(inferenceRaw.includeScopes),
+            excludeScopes: parseStringList(inferenceRaw.excludeScopes),
           };
         })(),
       }

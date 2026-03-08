@@ -23,11 +23,17 @@ interface InferenceJobDependencies {
 
 interface InferenceJobRunOptions {
   reason: string;
+  dryRun?: boolean;
+  includeScopes?: string[];
+  excludeScopes?: string[];
+  forceRun?: boolean;
 }
 
 interface InferenceJobSummary {
   reason: string;
+  dryRun: boolean;
   scopesScanned: number;
+  scopeFilterApplied: string[];
   candidates: number;
   stored: number;
   skippedDuplicate: number;
@@ -38,10 +44,15 @@ export function createGraphInferenceJob(deps: InferenceJobDependencies) {
 
   return async (options: InferenceJobRunOptions): Promise<InferenceJobSummary> => {
     const cfg = deps.graphitiConfig;
-    if (!cfg?.enabled || !cfg.inference.enabled || !deps.graphitiBridge) {
+    const dryRun = options.dryRun === true;
+    const forceRun = options.forceRun === true;
+
+    if (!cfg?.enabled || !deps.graphitiBridge || (!forceRun && !cfg.inference.enabled)) {
       return {
         reason: options.reason,
+        dryRun,
         scopesScanned: 0,
+        scopeFilterApplied: [],
         candidates: 0,
         stored: 0,
         skippedDuplicate: 0,
@@ -52,7 +63,9 @@ export function createGraphInferenceJob(deps: InferenceJobDependencies) {
       deps.logger?.info?.("graph-inference: previous run still active, skipping");
       return {
         reason: `${options.reason}:skipped_running`,
+        dryRun,
         scopesScanned: 0,
+        scopeFilterApplied: [],
         candidates: 0,
         stored: 0,
         skippedDuplicate: 0,
@@ -80,7 +93,14 @@ export function createGraphInferenceJob(deps: InferenceJobDependencies) {
       let stored = 0;
       let skippedDuplicate = 0;
 
-      const scopes = [...scopeMap.keys()].slice(0, cfg.inference.maxScopes);
+      const scopes = resolveEffectiveScopes({
+        allScopes: [...scopeMap.keys()],
+        includeFromConfig: cfg.inference.includeScopes,
+        excludeFromConfig: cfg.inference.excludeScopes,
+        includeFromRun: options.includeScopes,
+        excludeFromRun: options.excludeScopes,
+      }).slice(0, cfg.inference.maxScopes);
+
       for (const scope of scopes) {
         const rows = (scopeMap.get(scope) || []).slice(0, 10);
         if (rows.length === 0) continue;
@@ -110,6 +130,11 @@ export function createGraphInferenceJob(deps: InferenceJobDependencies) {
           const existing = await deps.store.vectorSearch(vector, 1, 0.1, [scope]);
           if (existing.length > 0 && existing[0].score > 0.97) {
             skippedDuplicate++;
+            continue;
+          }
+
+          if (dryRun) {
+            stored++;
             continue;
           }
 
@@ -167,11 +192,13 @@ export function createGraphInferenceJob(deps: InferenceJobDependencies) {
       }
 
       deps.logger?.info?.(
-        `graph-inference: reason=${options.reason} scopes=${scopesScanned} candidates=${candidates} stored=${stored} skippedDuplicate=${skippedDuplicate}`,
+        `graph-inference: reason=${options.reason} dryRun=${dryRun ? "yes" : "no"} scopes=${scopesScanned} candidates=${candidates} stored=${stored} skippedDuplicate=${skippedDuplicate}`,
       );
       return {
         reason: options.reason,
+        dryRun,
         scopesScanned,
+        scopeFilterApplied: scopes,
         candidates,
         stored,
         skippedDuplicate,
@@ -180,7 +207,9 @@ export function createGraphInferenceJob(deps: InferenceJobDependencies) {
       deps.logger?.warn?.(`graph-inference: run failed (${options.reason}): ${String(err)}`);
       return {
         reason: `${options.reason}:failed`,
+        dryRun,
         scopesScanned: 0,
+        scopeFilterApplied: [],
         candidates: 0,
         stored: 0,
         skippedDuplicate: 0,
@@ -189,4 +218,33 @@ export function createGraphInferenceJob(deps: InferenceJobDependencies) {
       running = false;
     }
   };
+}
+
+function resolveEffectiveScopes(input: {
+  allScopes: string[];
+  includeFromConfig?: string[];
+  excludeFromConfig?: string[];
+  includeFromRun?: string[];
+  excludeFromRun?: string[];
+}): string[] {
+  const fromConfigInclude = normalizeScopeList(input.includeFromConfig);
+  const fromConfigExclude = normalizeScopeList(input.excludeFromConfig);
+  const fromRunInclude = normalizeScopeList(input.includeFromRun);
+  const fromRunExclude = normalizeScopeList(input.excludeFromRun);
+
+  const include = fromRunInclude.length > 0 ? fromRunInclude : fromConfigInclude;
+  const exclude = new Set([...fromConfigExclude, ...fromRunExclude]);
+
+  const base = include.length > 0
+    ? input.allScopes.filter((scope) => include.includes(scope))
+    : [...input.allScopes];
+  return base.filter((scope) => !exclude.has(scope));
+}
+
+function normalizeScopeList(value: string[] | undefined): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0))];
 }

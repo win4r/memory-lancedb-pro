@@ -26,6 +26,8 @@ export interface GraphitiInferenceConfig {
   maxMemories: number;
   minConfidence: number;
   maxScopes: number;
+  includeScopes?: string[];
+  excludeScopes?: string[];
 }
 
 export interface GraphitiPluginConfig {

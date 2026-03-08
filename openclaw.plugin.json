@@ -590,6 +590,20 @@
                 "maximum": 20,
                 "default": 6,
                 "description": "Maximum scopes sampled in one inference run"
+              },
+              "includeScopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Optional inference scope allowlist"
+              },
+              "excludeScopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Optional inference scope denylist"
               }
             }
           }
@@ -1029,6 +1043,16 @@
     "graphiti.inference.maxScopes": {
       "label": "Inference Scope Limit",
       "help": "Maximum number of scopes sampled during one inference run",
+      "advanced": true
+    },
+    "graphiti.inference.includeScopes": {
+      "label": "Inference Scope Allowlist",
+      "help": "Optional list of scopes that inference is allowed to scan",
+      "advanced": true
+    },
+    "graphiti.inference.excludeScopes": {
+      "label": "Inference Scope Denylist",
+      "help": "Optional list of scopes that inference must skip",
       "advanced": true
     },
     "scopes.default": {
