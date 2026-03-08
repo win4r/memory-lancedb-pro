@@ -104,6 +104,54 @@
         "default": 0,
         "description": "Minimum number of turns before the same memory can be recalled again in the same session. Set to 0 to disable deduplication (default behavior: inject all memories)."
       },
+      "autoRecallTopK": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20,
+        "default": 3,
+        "description": "Maximum number of rows injected into <relevant-memories> for each turn."
+      },
+      "autoRecallCategories": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "preference",
+            "fact",
+            "decision",
+            "entity",
+            "other",
+            "reflection"
+          ]
+        },
+        "default": [
+          "preference",
+          "fact",
+          "decision",
+          "entity",
+          "other"
+        ],
+        "description": "Allowlist of memory categories eligible for generic Auto-Recall."
+      },
+      "autoRecallExcludeReflection": {
+        "type": "boolean",
+        "default": true,
+        "description": "Exclude category=reflection rows from generic Auto-Recall."
+      },
+      "autoRecallMaxAgeDays": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 3650,
+        "default": 30,
+        "description": "Drop Auto-Recall candidates older than this many days."
+      },
+      "autoRecallMaxEntriesPerKey": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "default": 10,
+        "description": "Per normalized text key, keep only the most recent N entries before Auto-Recall final trimming."
+      },
       "captureAssistant": {
         "type": "boolean"
       },
@@ -331,6 +379,69 @@
           "dedupeErrorSignals": {
             "type": "boolean",
             "default": true
+          },
+          "recall": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "fixed",
+                  "dynamic"
+                ],
+                "default": "fixed"
+              },
+              "topK": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "default": 6
+              },
+              "includeKinds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "invariant",
+                    "derived"
+                  ]
+                },
+                "default": [
+                  "invariant"
+                ]
+              },
+              "maxAgeDays": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3650,
+                "default": 45
+              },
+              "maxEntriesPerKey": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 10
+              },
+              "minRepeated": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100,
+                "default": 2
+              },
+              "minScore": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 5,
+                "default": 0.18
+              },
+              "minPromptLength": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200,
+                "default": 8
+              }
+            }
           }
         }
       },
@@ -452,6 +563,31 @@
     "autoRecallMinRepeated": {
       "label": "Auto-Recall Min Repeated",
       "help": "Minimum number of conversation turns before a specific memory can be re-injected in the same session.",
+      "advanced": true
+    },
+    "autoRecallTopK": {
+      "label": "Auto-Recall Top K",
+      "help": "Maximum rows injected into <relevant-memories> each turn.",
+      "advanced": true
+    },
+    "autoRecallCategories": {
+      "label": "Auto-Recall Categories",
+      "help": "Allowlist of categories eligible for generic auto-recall.",
+      "advanced": true
+    },
+    "autoRecallExcludeReflection": {
+      "label": "Exclude Reflection From Auto-Recall",
+      "help": "Exclude category=reflection rows from <relevant-memories>.",
+      "advanced": true
+    },
+    "autoRecallMaxAgeDays": {
+      "label": "Auto-Recall Max Age (days)",
+      "help": "Drop auto-recall candidates older than this many days.",
+      "advanced": true
+    },
+    "autoRecallMaxEntriesPerKey": {
+      "label": "Auto-Recall Max Entries Per Key",
+      "help": "Per normalized text key, keep only the most recent N entries before top-k trimming.",
       "advanced": true
     },
     "captureAssistant": {
@@ -605,6 +741,46 @@
     "memoryReflection.dedupeErrorSignals": {
       "label": "Dedupe Error Signals",
       "help": "Deduplicate repeated error signatures per session",
+      "advanced": true
+    },
+    "memoryReflection.recall.mode": {
+      "label": "Reflection-Recall Mode",
+      "help": "fixed keeps compatibility inheritance; dynamic enables prompt-gated Reflection-Recall.",
+      "advanced": true
+    },
+    "memoryReflection.recall.topK": {
+      "label": "Reflection-Recall Top K",
+      "help": "Maximum rows injected into <inherited-rules> in dynamic mode.",
+      "advanced": true
+    },
+    "memoryReflection.recall.includeKinds": {
+      "label": "Reflection-Recall Include Kinds",
+      "help": "Which reflection item kinds are considered in dynamic mode (invariant/derived).",
+      "advanced": true
+    },
+    "memoryReflection.recall.maxAgeDays": {
+      "label": "Reflection-Recall Max Age (days)",
+      "help": "Drop dynamic reflection candidates older than this many days.",
+      "advanced": true
+    },
+    "memoryReflection.recall.maxEntriesPerKey": {
+      "label": "Reflection-Recall Max Entries Per Key",
+      "help": "Per normalized key, keep only the most recent N rows before dynamic aggregation.",
+      "advanced": true
+    },
+    "memoryReflection.recall.minRepeated": {
+      "label": "Reflection-Recall Min Repeated",
+      "help": "Minimum turn gap before re-injecting the same dynamic reflection row in one session.",
+      "advanced": true
+    },
+    "memoryReflection.recall.minScore": {
+      "label": "Reflection-Recall Min Score",
+      "help": "Minimum aggregated score required for dynamic reflection injection.",
+      "advanced": true
+    },
+    "memoryReflection.recall.minPromptLength": {
+      "label": "Reflection-Recall Min Prompt Length",
+      "help": "Prompts shorter than this are skipped in dynamic reflection mode.",
       "advanced": true
     },
     "scopes.default": {

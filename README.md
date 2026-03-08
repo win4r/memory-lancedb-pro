@@ -234,7 +234,9 @@ Filters out low-quality content at both auto-capture and tool-store stages:
 - Error loop:
   - `after_tool_call` captures and deduplicates tool error signatures for reminder/reflection context.
 - Injection placement by hook (`memoryReflection.injectMode`):
-  - `before_agent_start`: injects `<inherited-rules>` (stable cross-session constraints).
+  - `before_agent_start`: injects `<inherited-rules>` via Reflection-Recall.
+  - `memoryReflection.recall.mode="fixed"` (default): compatibility path; fixed inheritance remains active even when generic Auto-Recall is disabled.
+  - `memoryReflection.recall.mode="dynamic"`: prompt-gated dynamic Reflection-Recall with independent top-k/session suppression budget from generic Auto-Recall.
   - `command:new` / `command:reset`: `runMemoryReflection` builds the self-improvement note (`<open-loops>` from fresh reflection; `<derived-focus>` from historical scored rows when mode is `inheritance+derived`).
   - `before_prompt_build`: injects `<error-detected>` only (no `<derived-focus>`).
 
@@ -282,7 +284,11 @@ When embedding calls fail, the plugin provides **actionable error messages** ins
 
 - **Auto-Capture** (`agent_end` hook): Extracts preference/fact/decision/entity from conversations, deduplicates, stores up to 3 per turn
   - Skips memory-management prompts (e.g. delete/forget/cleanup memory entries) to reduce noise
-- **Auto-Recall** (`before_agent_start` hook): Injects `<relevant-memories>` context (up to 3 entries)
+- **Auto-Recall** (`before_agent_start` hook): Injects `<relevant-memories>` context
+  - Default top-k: `autoRecallTopK=3`
+  - Default category allowlist: `preference`, `fact`, `decision`, `entity`, `other`
+  - `autoRecallExcludeReflection=true` by default, so `<relevant-memories>` stays separate from `<inherited-rules>`
+  - Supports age window (`autoRecallMaxAgeDays`) and recent-per-key cap (`autoRecallMaxEntriesPerKey`)
 
 ### Prevent memories from showing up in replies
 
@@ -478,6 +484,11 @@ openclaw config get plugins.slots.memory
   "autoCapture": true,
   "autoRecall": false,
   "autoRecallMinLength": 8,
+  "autoRecallTopK": 3,
+  "autoRecallCategories": ["preference", "fact", "decision", "entity", "other"],
+  "autoRecallExcludeReflection": true,
+  "autoRecallMaxAgeDays": 30,
+  "autoRecallMaxEntriesPerKey": 10,
   "retrieval": {
     "mode": "hybrid",
     "vectorWeight": 0.7,
@@ -525,7 +536,17 @@ openclaw config get plugins.slots.memory
     "timeoutMs": 20000,
     "thinkLevel": "medium",
     "errorReminderMaxEntries": 3,
-    "dedupeErrorSignals": true
+    "dedupeErrorSignals": true,
+    "recall": {
+      "mode": "fixed",
+      "topK": 6,
+      "includeKinds": ["invariant"],
+      "maxAgeDays": 45,
+      "maxEntriesPerKey": 10,
+      "minRepeated": 2,
+      "minScore": 0.18,
+      "minPromptLength": 8
+    }
   },
   "mdMirror": {
     "enabled": false,
@@ -554,6 +575,7 @@ A practical starting point for Chinese chat workloads:
   "autoCapture": true,
   "autoRecall": true,
   "autoRecallMinLength": 8,
+  "autoRecallExcludeReflection": true,
   "retrieval": {
     "candidatePoolSize": 20,
     "minScore": 0.45,

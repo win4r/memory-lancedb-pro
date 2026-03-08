@@ -230,6 +230,12 @@ Query → BM25 FTS ─────┘
   - 若配置的 agent id 不在 `cfg.agents.list` 中，插件会告警并回退到 runtime agent id。
 - 错误闭环：
   - `after_tool_call` 捕获并去重工具错误签名，用于提醒 / reflection 上下文。
+- Hook 注入位置（`memoryReflection.injectMode`）：
+  - `before_agent_start`：通过 Reflection-Recall 注入 `<inherited-rules>`。
+  - `memoryReflection.recall.mode="fixed"`（默认）：兼容路径；即使关闭 generic Auto-Recall，固定继承仍会注入。
+  - `memoryReflection.recall.mode="dynamic"`：按 prompt 动态检索反思规则，且与 generic Auto-Recall 使用独立 top-k / session 去重预算。
+  - `command:new` / `command:reset`：`runMemoryReflection` 生成 self-improvement note（`<open-loops>` 来自本次新反思；`<derived-focus>` 来自历史打分行，模式为 `inheritance+derived` 时启用）。
+  - `before_prompt_build`：仅注入 `<error-detected>`（不会注入 `<derived-focus>`）。
 
 ### 10. Markdown 镜像（`mdMirror`）
 
@@ -275,7 +281,11 @@ Query → BM25 FTS ─────┘
 
 - **Auto-Capture**（`agent_end` hook）: 从对话中提取 preference/fact/decision/entity，去重后存储（每次最多 3 条）
   - 触发词支持 **简体中文 + 繁體中文**（例如：记住/記住、偏好/喜好/喜歡、决定/決定 等）
-- **Auto-Recall**（`before_agent_start` hook）: 注入 `<relevant-memories>` 上下文（最多 3 条）
+- **Auto-Recall**（`before_agent_start` hook）: 注入 `<relevant-memories>` 上下文
+  - 默认 top-k：`autoRecallTopK=3`
+  - 默认类别白名单：`preference`、`fact`、`decision`、`entity`、`other`
+  - 默认 `autoRecallExcludeReflection=true`，让 `<relevant-memories>` 与 `<inherited-rules>` 分离
+  - 支持时间窗（`autoRecallMaxAgeDays`）和按归一化 key 的最近 N 条限制（`autoRecallMaxEntriesPerKey`）
 
 ### 不想在对话中“显示长期记忆”？
 
@@ -471,6 +481,11 @@ openclaw config get plugins.slots.memory
   "autoCapture": true,
   "autoRecall": false,
   "autoRecallMinLength": 8,
+  "autoRecallTopK": 3,
+  "autoRecallCategories": ["preference", "fact", "decision", "entity", "other"],
+  "autoRecallExcludeReflection": true,
+  "autoRecallMaxAgeDays": 30,
+  "autoRecallMaxEntriesPerKey": 10,
   "retrieval": {
     "mode": "hybrid",
     "vectorWeight": 0.7,
@@ -518,7 +533,17 @@ openclaw config get plugins.slots.memory
     "timeoutMs": 20000,
     "thinkLevel": "medium",
     "errorReminderMaxEntries": 3,
-    "dedupeErrorSignals": true
+    "dedupeErrorSignals": true,
+    "recall": {
+      "mode": "fixed",
+      "topK": 6,
+      "includeKinds": ["invariant"],
+      "maxAgeDays": 45,
+      "maxEntriesPerKey": 10,
+      "minRepeated": 2,
+      "minScore": 0.18,
+      "minPromptLength": 8
+    }
   },
   "mdMirror": {
     "enabled": false,
@@ -547,6 +572,7 @@ openclaw config get plugins.slots.memory
   "autoCapture": true,
   "autoRecall": true,
   "autoRecallMinLength": 8,
+  "autoRecallExcludeReflection": true,
   "retrieval": {
     "candidatePoolSize": 20,
     "minScore": 0.45,
