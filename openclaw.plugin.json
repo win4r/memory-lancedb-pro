@@ -600,6 +600,34 @@
             "description": "Fallback directory for Markdown mirror files when agent workspace is unknown"
           }
         }
+      },
+      "workspaceDocs": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Maintain managed sections in shared workspace markdown files"
+          },
+          "intervalMs": {
+            "type": "integer",
+            "minimum": 60000,
+            "maximum": 86400000,
+            "default": 1800000,
+            "description": "Periodic refresh interval for workspace markdown materialization"
+          },
+          "markerPrefix": {
+            "type": "string",
+            "default": "memory-lancedb-pro",
+            "description": "Prefix for managed markdown markers"
+          },
+          "refreshOnReflection": {
+            "type": "boolean",
+            "default": true,
+            "description": "Refresh workspace docs after reflection is generated"
+          }
+        }
       }
     },
     "required": [
@@ -966,6 +994,26 @@
     "mdMirror.dir": {
       "label": "Mirror Fallback Directory",
       "help": "Fallback directory when agent workspace mapping is unavailable",
+      "advanced": true
+    },
+    "workspaceDocs.enabled": {
+      "label": "Workspace Docs Materializer",
+      "help": "Maintain managed sections in shared OpenClaw workspace markdown files",
+      "advanced": true
+    },
+    "workspaceDocs.intervalMs": {
+      "label": "Workspace Docs Interval",
+      "help": "Refresh interval in milliseconds for managed workspace docs",
+      "advanced": true
+    },
+    "workspaceDocs.markerPrefix": {
+      "label": "Workspace Marker Prefix",
+      "help": "Prefix for managed markdown block markers",
+      "advanced": true
+    },
+    "workspaceDocs.refreshOnReflection": {
+      "label": "Refresh On Reflection",
+      "help": "Refresh workspace docs after each reflection run",
       "advanced": true
     }
   }

@@ -43,6 +43,7 @@ import { buildReflectionMappedMetadata } from "./src/reflection-mapped-metadata.
 import { createMemoryCLI } from "./cli.js";
 import { createGraphitiBridge } from "./src/graphiti/bridge.js";
 import { createGraphitiSyncService } from "./src/graphiti/sync.js";
+import { createWorkspaceDocsMaterializer } from "./src/workspace-docs.js";
 import type { GraphitiPluginConfig } from "./src/graphiti/types.js";
 import { extractReflectionOpenLoops } from "./src/reflection-slices.js";
 import {
@@ -121,6 +122,16 @@ interface PluginConfig {
     messageCount: number;
     storeToLanceDB: boolean;
     recall: ReflectionRecallConfig;
+  };
+  mdMirror?: {
+    enabled: boolean;
+    dir?: string;
+  };
+  workspaceDocs?: {
+    enabled: boolean;
+    intervalMs: number;
+    markerPrefix: string;
+    refreshOnReflection: boolean;
   };
   sessionMemory?: { enabled?: boolean; messageCount?: number };
   graphiti?: GraphitiPluginConfig;
@@ -831,6 +842,23 @@ const memoryLanceDBProPlugin = {
     // ========================================================================
 
     const mdMirror = createMdMirrorWriter(api, config);
+    const workspaceDocs = config.workspaceDocs?.enabled
+      ? createWorkspaceDocsMaterializer({
+          store,
+          workspaceDir: getDefaultWorkspaceDir(),
+          markerPrefix: config.workspaceDocs.markerPrefix,
+          logger: api.logger,
+        })
+      : null;
+
+    const refreshWorkspaceDocs = async (reason: string) => {
+      if (!workspaceDocs) return;
+      try {
+        await workspaceDocs.refresh({ reason });
+      } catch (err) {
+        api.logger.warn(`workspace-docs: refresh failed (${reason}): ${String(err)}`);
+      }
+    };
 
     if (graphitiBridge) {
       setTimeout(() => {
@@ -1122,6 +1150,7 @@ const memoryLanceDBProPlugin = {
             api.logger.info(
               `memory-lancedb-pro: auto-captured ${stored} memories for agent ${agentId} in scope ${defaultScope}`,
             );
+            void refreshWorkspaceDocs("auto_capture");
           }
         } catch (err) {
           api.logger.warn(`memory-lancedb-pro: capture failed: ${String(err)}`);
@@ -1978,6 +2007,10 @@ const memoryLanceDBProPlugin = {
           await ensureDailyLogFile(dailyPath, dateStr);
           await appendFile(dailyPath, `- [${timeHms} UTC] Reflection generated: \`${relPath}\`\n`, "utf-8");
 
+          if (config.workspaceDocs?.refreshOnReflection) {
+            void refreshWorkspaceDocs("reflection");
+          }
+
           api.logger.info(`memory-reflection: wrote ${relPath} for session ${currentSessionId}`);
         } catch (err) {
           api.logger.warn(`memory-reflection: hook failed: ${String(err)}`);
@@ -2044,6 +2077,7 @@ const memoryLanceDBProPlugin = {
     // ========================================================================
 
     let backupTimer: ReturnType<typeof setInterval> | null = null;
+    let workspaceDocsTimer: ReturnType<typeof setInterval> | null = null;
     const BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
     async function runBackup() {
@@ -2167,6 +2201,14 @@ const memoryLanceDBProPlugin = {
         // Run initial backup after a short delay, then schedule daily
         setTimeout(() => void runBackup(), 60_000); // 1 min after start
         backupTimer = setInterval(() => void runBackup(), BACKUP_INTERVAL_MS);
+
+        if (workspaceDocs && config.workspaceDocs?.enabled) {
+          setTimeout(() => void refreshWorkspaceDocs("startup"), 75_000);
+          workspaceDocsTimer = setInterval(
+            () => void refreshWorkspaceDocs("scheduled"),
+            config.workspaceDocs.intervalMs,
+          );
+        }
       },
       stop: async () => {
         // Flush pending access reinforcement data before shutdown
@@ -2180,6 +2222,10 @@ const memoryLanceDBProPlugin = {
         if (backupTimer) {
           clearInterval(backupTimer);
           backupTimer = null;
+        }
+        if (workspaceDocsTimer) {
+          clearInterval(workspaceDocsTimer);
+          workspaceDocsTimer = null;
         }
         api.logger.info("memory-lancedb-pro: stopped");
       },
@@ -2314,6 +2360,10 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     typeof cfg.graphiti === "object" && cfg.graphiti !== null
       ? (cfg.graphiti as Record<string, unknown>)
       : undefined;
+  const workspaceDocsRaw =
+    typeof cfg.workspaceDocs === "object" && cfg.workspaceDocs !== null
+      ? (cfg.workspaceDocs as Record<string, unknown>)
+      : undefined;
 
   const graphiti: GraphitiPluginConfig | undefined = graphitiRaw
     ? {
@@ -2391,6 +2441,16 @@ export function parsePluginConfig(value: unknown): PluginConfig {
       }
     : undefined;
 
+  const workspaceDocs = {
+    enabled: workspaceDocsRaw?.enabled === true,
+    intervalMs: parsePositiveInt(workspaceDocsRaw?.intervalMs) ?? 30 * 60 * 1000,
+    markerPrefix:
+      typeof workspaceDocsRaw?.markerPrefix === "string" && workspaceDocsRaw.markerPrefix.trim().length > 0
+        ? workspaceDocsRaw.markerPrefix.trim()
+        : "memory-lancedb-pro",
+    refreshOnReflection: parseBoolean(workspaceDocsRaw?.refreshOnReflection, true),
+  };
+
   return {
     embedding: {
       provider: "openai-compatible",
@@ -2466,6 +2526,7 @@ export function parsePluginConfig(value: unknown): PluginConfig {
       recall: reflectionRecall,
     },
     graphiti,
+    workspaceDocs,
     sessionMemory:
       typeof cfg.sessionMemory === "object" && cfg.sessionMemory !== null
         ? {

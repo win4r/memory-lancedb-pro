@@ -260,6 +260,23 @@ Filters out low-quality content at both auto-capture and tool-store stages:
   - `mdMirror.enabled`: enable/disable dual-write (`false` by default).
   - `mdMirror.dir`: fallback directory for Markdown mirror files.
 
+### 10.1 Workspace Docs Materializer (`workspaceDocs`)
+
+- Purpose:
+  - Maintain plugin-managed sections inside shared workspace markdown files.
+  - Files: `USER.md`, `AGENTS.md`, `IDENTITY.md`, `MEMORY.md`, `SOUL.md`, `HEARTBEAT.md`, `TOOLS.md`.
+- Safety:
+  - Conservative mode by default.
+  - Only marker-scoped blocks are updated; user-authored content outside markers is preserved.
+- Triggers:
+  - Scheduled refresh (`workspaceDocs.intervalMs`).
+  - Optional refresh after reflection (`workspaceDocs.refreshOnReflection`).
+- Config:
+  - `workspaceDocs.enabled`: enable/disable materialization (`false` by default).
+  - `workspaceDocs.intervalMs`: periodic refresh interval in ms (default: `1800000`).
+  - `workspaceDocs.markerPrefix`: marker prefix for managed blocks (default: `memory-lancedb-pro`).
+  - `workspaceDocs.refreshOnReflection`: refresh docs after reflection writes (`true` by default).
+
 ### 11. Long Context Chunking
 
 Automatically handles documents that exceed embedding model context limits:
