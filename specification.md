@@ -113,27 +113,71 @@ Unified provenance metadata across LanceDB/Graphiti/docs:
 ## Implementation Checklist
 
 1. Foundation
-   - [ ] Graphiti runtime/schema/doc defaults aligned.
-   - [ ] MCP client supports initialize, session id, auth headers.
-   - [ ] Config parser cleanup merged.
+   - [x] Graphiti runtime/schema/doc defaults aligned.
+   - [x] MCP client supports initialize, session id, auth headers.
+   - [x] Config parser cleanup merged.
 2. Sync
-   - [ ] `memory_store` routed through graph sync service.
-   - [ ] `memory_update` and `memory_forget` graph consistency strategy implemented.
-   - [ ] Backfill and resync command path implemented.
+   - [x] `memory_store` routed through graph sync service.
+   - [x] `memory_update` and `memory_forget` graph consistency strategy implemented.
+   - [x] Backfill and resync command path implemented.
 3. Reflection
-   - [ ] Graph context assembled before reflection generation.
-   - [ ] Reflection parser handles graph sections and promotion candidates.
+   - [x] Graph context assembled before reflection generation.
+   - [x] Reflection parser handles graph sections and promotion candidates.
 4. Inference
-   - [ ] Inference job emits labeled outputs with provenance.
-   - [ ] Contradictions block high-trust promotion.
+   - [x] Inference job emits labeled outputs with provenance.
+   - [x] Contradictions block high-trust promotion.
 5. Docs
-   - [ ] Marker-scoped materializer updates shared workspace files.
-   - [ ] High-trust files only accept conservative promotions.
+   - [x] Marker-scoped materializer updates shared workspace files.
+   - [x] High-trust files only accept conservative promotions.
 6. Operations
-   - [ ] CLI graph/docs operational commands available.
-   - [ ] Doctor reports endpoint/auth/capability/sync lag status.
+   - [x] CLI graph/docs operational commands available.
+   - [x] Doctor reports endpoint/auth/capability/sync lag status.
 7. Quality
-   - [ ] Unit/integration/regression tests passing.
+   - [x] Unit/integration/regression tests passing.
+
+## Extended Implementation (Phase 0-5)
+
+### Phase 0: Foundations
+- Fixed config defaults drift (base URL, parser duplicates)
+- Upgraded Graphiti MCP client with `initialize`/`notifications/initialized`/session/auth headers
+- Added `GraphitiAuthConfig` to schema
+
+### Phase 1: Graph Sync Pipeline
+- Created centralized `GraphitiSyncService` (`src/graphiti/sync.ts`)
+- Wired `memory_store`/`memory_update`/`memory_forget` through sync service
+- Auto-capture and reflection-mapped memory also flow through sync service
+
+### Phase 2: Graph-aware Reflection
+- Added `buildGraphReflectionContext()` (`src/graphiti/reflection.ts`)
+- Injects graph context into reflection generation
+- Persists graph-inferred candidates with provenance metadata
+
+### Phase 3: Inference Layer
+- Created scheduled graph inference job (`src/graphiti/inference.ts`)
+- Runs independently of reflection (startup + interval)
+- Config supports `includeScopes`/`excludeScopes` whitelist/denylist
+
+### Phase 4: Workspace Docs Materializer
+- New `WorkspaceDocsMaterializer` (`src/workspace-docs.ts`)
+- Marker-scoped block updates (USER.md, AGENTS.md, IDENTITY.md, MEMORY.md, SOUL.md, HEARTBEAT.md, TOOLS.md)
+- Integrated with scheduled refresh and reflection-triggered refresh
+
+### Phase 5: Promotion Policy
+- Created `promotion-policy.ts` with trust levels (`asserted`/`inferred`/`candidate`/`rejected`)
+- Contradiction detection (positive/negative polarity)
+- Queue reason statistics
+- Manual approval/rejection workflow
+
+### CLI Commands Added
+- `memory-pro graph-doctor` — inspect sync metadata health
+- `memory-pro graph-infer --once --dry-run --scope --include-scopes --exclude-scopes` — manual trigger
+- `memory-pro graph-sync --mode backfill|resync --dry-run --scope --limit`
+- `memory-pro graph-backfill`, `memory-pro graph-resync` — shortcuts
+- `memory-pro graph-import --mode recall|list --scope --query --limit --dry-run` — reverse import from Graphiti
+- `memory-pro promotion-queue --scope --limit --json`
+- `memory-pro promotion-approve <id> --target`
+- `memory-pro promotion-reject <id> --reason`
+- `memory-pro docs-refresh --workspace --reason`
 
 ## File-by-File Change Map
 
