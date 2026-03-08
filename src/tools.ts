@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { MemoryRetriever, RetrievalResult } from "./retriever.js";
 import type { MemoryStore } from "./store.js";
-import { isNoise } from "./noise-filter.js";
+import { isNoise, sanitizeMemoryText } from "./noise-filter.js";
 import type { MemoryScopeManager } from "./scopes.js";
 import type { Embedder } from "./embedder.js";
 import { appendSelfImprovementEntry, ensureSelfImprovementLearningFiles } from "./self-improvement-files.js";
@@ -68,7 +68,7 @@ function clamp01(value: number, fallback = 0.7): number {
 function sanitizeMemoryForSerialization(results: RetrievalResult[]) {
   return results.map((r) => ({
     id: r.entry.id,
-    text: r.entry.text,
+    text: sanitizeMemoryText(r.entry.text),
     category: getDisplayCategoryTag(r.entry),
     rawCategory: r.entry.category,
     scope: r.entry.scope,
@@ -414,7 +414,8 @@ export function registerMemoryRecallTool(
               if (r.sources.reranked) sources.push("reranked");
 
               const categoryTag = getDisplayCategoryTag(r.entry);
-              return `${i + 1}. [${r.entry.id}] [${categoryTag}] ${r.entry.text} (${(r.score * 100).toFixed(0)}%${sources.length > 0 ? `, ${sources.join("+")}` : ""})`;
+              const cleanText = sanitizeMemoryText(r.entry.text) || r.entry.text;
+              return `${i + 1}. [${r.entry.id}] [${categoryTag}] ${cleanText} (${(r.score * 100).toFixed(0)}%${sources.length > 0 ? `, ${sources.join("+")}` : ""})`;
             })
             .join("\n");
 
@@ -508,21 +509,22 @@ export function registerMemoryStoreTool(
             };
           }
 
-          // Reject noise before wasting an embedding API call
-          if (isNoise(text)) {
+          // Strip transport/system wrappers and reject noise before embedding
+          const cleanedText = sanitizeMemoryText(text);
+          if (isNoise(cleanedText)) {
             return {
               content: [
                 {
                   type: "text",
-                  text: `Skipped: text detected as noise (greeting, boilerplate, or meta-question)`,
+                  text: `Skipped: text detected as noise (greeting, boilerplate, metadata, or meta-question)`,
                 },
               ],
-              details: { action: "noise_filtered", text: text.slice(0, 60) },
+              details: { action: "noise_filtered", text: cleanedText.slice(0, 60) },
             };
           }
 
           const safeImportance = clamp01(importance, 0.7);
-          const vector = await context.embedder.embedPassage(text);
+          const vector = await context.embedder.embedPassage(cleanedText);
 
           // Check for duplicates using raw vector similarity (bypasses importance/recency weighting)
           // Fail-open by design: dedup must never block a legitimate memory write.
@@ -859,25 +861,27 @@ export function registerMemoryUpdateTool(
             }
           }
 
-          // If text changed, re-embed; reject noise
+          // If text changed, sanitize first, then re-embed
           let newVector: number[] | undefined;
+          let cleanedUpdateText: string | undefined;
           if (text) {
-            if (isNoise(text)) {
+            cleanedUpdateText = sanitizeMemoryText(text);
+            if (isNoise(cleanedUpdateText)) {
               return {
                 content: [
                   {
                     type: "text",
-                    text: "Skipped: updated text detected as noise",
+                    text: "Skipped: updated text detected as noise or metadata wrapper",
                   },
                 ],
                 details: { action: "noise_filtered" },
               };
             }
-            newVector = await context.embedder.embedPassage(text);
+            newVector = await context.embedder.embedPassage(cleanedUpdateText);
           }
 
           const updates: Record<string, any> = {};
-          if (text) updates.text = text;
+          if (cleanedUpdateText) updates.text = cleanedUpdateText;
           if (newVector) updates.vector = newVector;
           if (importance !== undefined)
             updates.importance = clamp01(importance, 0.7);
