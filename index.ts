@@ -110,6 +110,7 @@ interface PluginConfig {
     dedupeErrorSignals?: boolean;
   };
   mdMirror?: { enabled?: boolean; dir?: string };
+  exposeRetrievalMetadata?: boolean;
 }
 
 type ReflectionThinkLevel = "off" | "minimal" | "low" | "medium" | "high";
@@ -1509,6 +1510,7 @@ const memoryLanceDBProPlugin = {
         agentId: undefined, // Will be determined at runtime from context
         workspaceDir: getDefaultWorkspaceDir(),
         mdMirror,
+        exposeRetrievalMetadata: config.exposeRetrievalMetadata,
       },
       {
         enableManagementTools: config.enableManagementTools,
@@ -1609,7 +1611,7 @@ const memoryLanceDBProPlugin = {
           const memoryContext = finalResults
             .map(
               (r) =>
-                `- [${r.entry.category}:${r.entry.scope}] ${sanitizeForContext(r.entry.text)} (${(r.score * 100).toFixed(0)}%${r.sources?.bm25 ? ", vector+BM25" : ""}${r.sources?.reranked ? "+reranked" : ""})`,
+                `- [${r.entry.category}:${r.entry.scope}] ${sanitizeForContext(r.entry.text)}`,
             )
             .join("\n");
 
@@ -2729,6 +2731,7 @@ export function parsePluginConfig(value: unknown): PluginConfig {
                 : undefined,
           }
         : undefined,
+    exposeRetrievalMetadata: cfg.exposeRetrievalMetadata === true,
   };
 }
 
