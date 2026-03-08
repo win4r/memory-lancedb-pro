@@ -339,6 +339,9 @@ Add a line to your agent system prompt, e.g.:
 >
 > See [Release Notes](https://github.com/win4r/memory-lancedb-pro/releases/tag/v1.1.0-beta.6) for details. Feedback welcome via [GitHub Issues](https://github.com/win4r/memory-lancedb-pro/issues).
 
+> The `dev` dist-tag is an experimental track intended for early testing of the smart-memory feature set and may diverge from the mainline beta.
+
+
 ### AI-safe install notes (anti-hallucination)
 
 If you are following this README using an AI assistant, **do not assume defaults**. Always run these commands first and use the real output:
