@@ -20,6 +20,14 @@ export interface GraphitiReadConfig {
   topKFacts: number;
 }
 
+export interface GraphitiInferenceConfig {
+  enabled: boolean;
+  intervalMs: number;
+  maxMemories: number;
+  minConfidence: number;
+  maxScopes: number;
+}
+
 export interface GraphitiPluginConfig {
   enabled: boolean;
   baseUrl: string;
@@ -31,6 +39,7 @@ export interface GraphitiPluginConfig {
   auth?: GraphitiAuthConfig;
   write: GraphitiWriteConfig;
   read: GraphitiReadConfig;
+  inference: GraphitiInferenceConfig;
 }
 
 export interface GraphitiEpisodeInput {

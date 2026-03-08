@@ -553,6 +553,45 @@
                 "default": 10
               }
             }
+          },
+          "inference": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "Run periodic graph inference job from LanceDB + Graphiti facts"
+              },
+              "intervalMs": {
+                "type": "integer",
+                "minimum": 60000,
+                "maximum": 86400000,
+                "default": 2700000,
+                "description": "Interval for scheduled graph inference runs"
+              },
+              "maxMemories": {
+                "type": "integer",
+                "minimum": 20,
+                "maximum": 1000,
+                "default": 120,
+                "description": "Maximum recent memories scanned per inference run"
+              },
+              "minConfidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.62,
+                "description": "Minimum confidence for storing inferred candidates"
+              },
+              "maxScopes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "default": 6,
+                "description": "Maximum scopes sampled in one inference run"
+              }
+            }
           }
         }
       },
@@ -965,6 +1004,31 @@
     "graphiti.read.enableGraphRecallTool": {
       "label": "Enable Graph Recall Tool",
       "help": "Registers memory_graph_recall for Graphiti node/fact queries",
+      "advanced": true
+    },
+    "graphiti.inference.enabled": {
+      "label": "Enable Graph Inference Job",
+      "help": "Run periodic inference from LanceDB + Graphiti facts and store inferred candidates",
+      "advanced": true
+    },
+    "graphiti.inference.intervalMs": {
+      "label": "Graph Inference Interval",
+      "help": "Interval in milliseconds for scheduled graph inference runs",
+      "advanced": true
+    },
+    "graphiti.inference.maxMemories": {
+      "label": "Inference Memory Scan Limit",
+      "help": "Maximum recent memories scanned each inference cycle",
+      "advanced": true
+    },
+    "graphiti.inference.minConfidence": {
+      "label": "Inference Minimum Confidence",
+      "help": "Minimum confidence required to persist inferred candidates",
+      "advanced": true
+    },
+    "graphiti.inference.maxScopes": {
+      "label": "Inference Scope Limit",
+      "help": "Maximum number of scopes sampled during one inference run",
       "advanced": true
     },
     "scopes.default": {

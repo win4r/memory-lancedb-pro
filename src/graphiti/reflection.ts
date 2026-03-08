@@ -97,7 +97,7 @@ export async function buildGraphReflectionContext(input: {
   }
 }
 
-function inferCandidatesFromFacts(facts: string[]): GraphReflectionInferenceCandidate[] {
+export function inferCandidatesFromFacts(facts: string[]): GraphReflectionInferenceCandidate[] {
   const candidates: GraphReflectionInferenceCandidate[] = [];
   const seen = new Set<string>();
 

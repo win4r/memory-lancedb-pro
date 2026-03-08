@@ -43,6 +43,7 @@ import { buildReflectionMappedMetadata } from "./src/reflection-mapped-metadata.
 import { createMemoryCLI } from "./cli.js";
 import { createGraphitiBridge } from "./src/graphiti/bridge.js";
 import { createGraphitiSyncService } from "./src/graphiti/sync.js";
+import { createGraphInferenceJob } from "./src/graphiti/inference.js";
 import { buildGraphReflectionContext } from "./src/graphiti/reflection.js";
 import { createWorkspaceDocsMaterializer } from "./src/workspace-docs.js";
 import type { GraphitiPluginConfig } from "./src/graphiti/types.js";
@@ -860,6 +861,16 @@ const memoryLanceDBProPlugin = {
         api.logger.warn(`workspace-docs: refresh failed (${reason}): ${String(err)}`);
       }
     };
+
+    const runGraphInferenceJob = createGraphInferenceJob({
+      store,
+      embedder,
+      graphitiBridge,
+      graphitiSync,
+      graphitiConfig: config.graphiti,
+      mdMirror,
+      logger: api.logger,
+    });
 
     if (graphitiBridge) {
       setTimeout(() => {
@@ -2171,6 +2182,7 @@ const memoryLanceDBProPlugin = {
 
     let backupTimer: ReturnType<typeof setInterval> | null = null;
     let workspaceDocsTimer: ReturnType<typeof setInterval> | null = null;
+    let graphInferenceTimer: ReturnType<typeof setInterval> | null = null;
     const BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
     async function runBackup() {
@@ -2302,6 +2314,21 @@ const memoryLanceDBProPlugin = {
             config.workspaceDocs.intervalMs,
           );
         }
+
+        if (config.graphiti?.enabled && config.graphiti.inference.enabled) {
+          setTimeout(async () => {
+            const result = await runGraphInferenceJob({ reason: "startup" });
+            if (result.stored > 0) {
+              await refreshWorkspaceDocs("graph_inference_startup");
+            }
+          }, 90_000);
+          graphInferenceTimer = setInterval(async () => {
+            const result = await runGraphInferenceJob({ reason: "scheduled" });
+            if (result.stored > 0) {
+              await refreshWorkspaceDocs("graph_inference_scheduled");
+            }
+          }, config.graphiti.inference.intervalMs);
+        }
       },
       stop: async () => {
         // Flush pending access reinforcement data before shutdown
@@ -2319,6 +2346,10 @@ const memoryLanceDBProPlugin = {
         if (workspaceDocsTimer) {
           clearInterval(workspaceDocsTimer);
           workspaceDocsTimer = null;
+        }
+        if (graphInferenceTimer) {
+          clearInterval(graphInferenceTimer);
+          graphInferenceTimer = null;
         }
         api.logger.info("memory-lancedb-pro: stopped");
       },
@@ -2529,6 +2560,22 @@ export function parsePluginConfig(value: unknown): PluginConfig {
             augmentMemoryRecall: parseBoolean(readRaw.augmentMemoryRecall, false),
             topKNodes: parsePositiveInt(readRaw.topKNodes) ?? 6,
             topKFacts: parsePositiveInt(readRaw.topKFacts) ?? 10,
+          };
+        })(),
+        inference: (() => {
+          const inferenceRaw =
+            typeof graphitiRaw.inference === "object" && graphitiRaw.inference !== null
+              ? (graphitiRaw.inference as Record<string, unknown>)
+              : {};
+          const maxMemories = parsePositiveInt(inferenceRaw.maxMemories) ?? 120;
+          const maxScopes = parsePositiveInt(inferenceRaw.maxScopes) ?? 6;
+          const minConfidenceRaw = parseNumber(inferenceRaw.minConfidence);
+          return {
+            enabled: parseBoolean(inferenceRaw.enabled, false),
+            intervalMs: parsePositiveInt(inferenceRaw.intervalMs) ?? 45 * 60 * 1000,
+            maxMemories: Math.min(1000, Math.max(20, maxMemories)),
+            minConfidence: Math.min(1, Math.max(0, minConfidenceRaw ?? 0.62)),
+            maxScopes: Math.min(20, Math.max(1, maxScopes)),
           };
         })(),
       }

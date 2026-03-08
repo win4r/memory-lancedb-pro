@@ -315,6 +315,7 @@ When embedding calls fail, the plugin provides **actionable error messages** ins
 - Optionally mirror successful `memory_store` writes to Graphiti (`add_episode`) using `scope -> group_id`.
 - Expose graph-native recall via `memory_graph_recall` (separate from `memory_recall`).
 - Reflection can consume Graphiti context snapshots and write low-confidence graph-inferred candidates back to memory.
+- Optional scheduled graph inference job can run independently of reflection and write inferred candidates.
 - Fail-open behavior: Graphiti outages do not fail `memory_store`.
 
 Operational CLI commands:
@@ -348,6 +349,13 @@ Minimal config:
               "augmentMemoryRecall": false,
               "topKNodes": 6,
               "topKFacts": 10
+            },
+            "inference": {
+              "enabled": false,
+              "intervalMs": 2700000,
+              "maxMemories": 120,
+              "minConfidence": 0.62,
+              "maxScopes": 6
             }
           }
         }
