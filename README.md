@@ -18,7 +18,7 @@ Hybrid Retrieval (Vector + BM25) · Cross-Encoder Rerank · Multi-Scope Isolatio
 
 ## 📺 Video Tutorial
 
-> **Watch the full walkthrough — covers installation, configuration, and how hybrid retrieval works under the hood.**
+> **Watch the full walkthrough - covers installation, configuration, and how hybrid retrieval works under the hood.**
 
 [![YouTube Video](https://img.shields.io/badge/YouTube-Watch%20Now-red?style=for-the-badge&logo=youtube)](https://youtu.be/MtukF1C8epQ)
 🔗 **https://youtu.be/MtukF1C8epQ**
@@ -267,7 +267,7 @@ Automatically handles documents that exceed embedding model context limits:
 - **Smart splitting**: Chunks at sentence boundaries with configurable overlap (default: 200 chars)
 - **Averaged embedding**: Each chunk is embedded separately, then averaged for semantic preservation
 - **Graceful error handling**: Detects "Input length exceeds context length" errors and retries with chunking
-- **Config toggle**: `embedding.chunking` — set `false` to disable (default: auto-enabled on context-length errors)
+- **Config toggle**: `embedding.chunking` - set `false` to disable (default: auto-enabled on context-length errors)
 - **Adapts to model limits**: Jina (8192 tokens), OpenAI (8191), Gemini (2048), etc.
 
 See [`docs/long-context-chunking.md`](docs/long-context-chunking.md) for implementation details.
@@ -338,7 +338,9 @@ Add a line to your agent system prompt, e.g.:
 > ```
 >
 > See [Release Notes](https://github.com/win4r/memory-lancedb-pro/releases/tag/v1.1.0-beta.6) for details. Feedback welcome via [GitHub Issues](https://github.com/win4r/memory-lancedb-pro/issues).
-
+>
+> The `dev` dist-tag is an experimental track intended for early testing of the smart-memory feature set and may diverge from the mainline beta.
+ 
 ### AI-safe install notes (anti-hallucination)
 
 If you are following this README using an AI assistant, **do not assume defaults**. Always run these commands first and use the real output:
@@ -359,15 +361,15 @@ Recommendations:
 
 - **Embedding**: set `embedding.apiKey` to your Jina key (recommended: use an env var like `${JINA_API_KEY}`).
 - **Rerank** (when `retrieval.rerankProvider: "jina"`): you can typically use the **same** Jina key for `retrieval.rerankApiKey`.
-- If you use a different rerank provider (`siliconflow`, `pinecone`, etc.), `retrieval.rerankApiKey` should be that provider’s key.
+- If you use a different rerank provider (`siliconflow`, `pinecone`, etc.), `retrieval.rerankApiKey` should be that provider's key.
 
 Key storage guidance:
 - Avoid committing secrets into git.
 - Using `${...}` env vars is fine, but make sure the **Gateway service process** has those env vars (system services often do not inherit your interactive shell environment).
 
-### What is the “OpenClaw workspace”?
+### What is the "OpenClaw workspace"?
 
-In OpenClaw, the **agent workspace** is the agent’s working directory (default: `~/.openclaw/workspace`).
+In OpenClaw, the **agent workspace** is the agent's working directory (default: `~/.openclaw/workspace`).
 According to the docs, the workspace is the **default cwd**, and **relative paths are resolved against the workspace** (unless you use an absolute path).
 
 > Note: OpenClaw configuration typically lives under `~/.openclaw/openclaw.json` (separate from the workspace).
@@ -591,8 +593,8 @@ A practical starting point for Chinese chat workloads:
 To make frequently used memories decay more slowly, the retriever can extend the effective time-decay half-life based on **manual recall frequency** (spaced-repetition style).
 
 Config keys (under `retrieval`):
-- `reinforcementFactor` (range: 0–2, default: `0.5`) — set `0` to disable
-- `maxHalfLifeMultiplier` (range: 1–10, default: `3`) — hard cap: effective half-life ≤ base × multiplier
+- `reinforcementFactor` (range: 0-2, default: `0.5`) - set `0` to disable
+- `maxHalfLifeMultiplier` (range: 1-10, default: `3`) - hard cap: effective half-life ≤ base × multiplier
 
 Notes:
 - Reinforcement is **whitelisted to `source: "manual"`** (i.e. user/tool initiated recall), to avoid accidental strengthening from auto-recall.
@@ -618,10 +620,12 @@ Cross-encoder reranking supports multiple providers via `rerankProvider`:
 | **SiliconFlow** (free tier available) | `siliconflow` | `https://api.siliconflow.com/v1/rerank` | `BAAI/bge-reranker-v2-m3`, `Qwen/Qwen3-Reranker-8B` |
 | **Voyage AI** | `voyage` | `https://api.voyageai.com/v1/rerank` | `rerank-2.5` |
 | **Pinecone** | `pinecone` | `https://api.pinecone.io/rerank` | `bge-reranker-v2-m3` |
+| **vLLM / Docker Model Runner** | `vllm` | _requires custom endpoint_ | `Qwen3-Reranker` |
 
 Notes:
 - `voyage` sends `{ model, query, documents }` without `top_n`.
 - Voyage responses are parsed from `data[].relevance_score`.
+- `vllm` requires a custom `rerankEndpoint` (no API key needed). Only works on x86_64 NVIDIA platforms.
 
 <details>
 <summary><strong>SiliconFlow Example</strong></summary>
@@ -674,6 +678,25 @@ Notes:
 
 </details>
 
+<details>
+<summary><strong>vLLM / Docker Model Runner Example</strong></summary>
+
+```json
+{
+  "retrieval": {
+    "rerank": "cross-encoder",
+    "rerankProvider": "vllm",
+    "rerankEndpoint": "http://host.docker.internal:12434/engines/vllm/rerank",
+    "rerankModel": "ai/qwen3-reranker:0.6B"
+  }
+}
+```
+
+**Note:** vLLM reranking only works on x86_64 NVIDIA platforms. For macOS Apple Silicon, use `llama.cpp` for embeddings but not vLLM for reranking.
+```
+
+</details>
+
 ---
 
 ## Optional: JSONL Session Distillation (Auto-memories from chat logs)
@@ -689,7 +712,7 @@ Instead, **recommended (2026-02+)** is a **non-blocking `/new` pipeline**:
 - Trigger: `command:new` (you type `/new`)
 - Hook: enqueue a tiny JSON task file (fast; no LLM calls inside the hook)
 - Worker: a user-level systemd service watches the inbox and runs **Gemini Map-Reduce** on the session JSONL transcript
-- Store: writes **0–20** high-signal, atomic lessons into LanceDB Pro via `openclaw memory-pro import`
+- Store: writes **0-20** high-signal, atomic lessons into LanceDB Pro via `openclaw memory-pro import`
 - Keywords: each memory includes `Keywords (zh)` with a simple taxonomy (Entity + Action + Symptom). Entity keywords must be copied verbatim from the transcript (no hallucinated project names).
 - Notify: optional Telegram/Discord notification (even if 0 lessons)
 
@@ -954,7 +977,7 @@ LanceDB table `memories`:
 | `vector` | float[] | Embedding vector |
 | `category` | string | `preference` / `fact` / `decision` / `entity` / `reflection` / `other` |
 | `scope` | string | Scope identifier (e.g., `global`, `agent:main`) |
-| `importance` | float | Importance score 0–1 |
+| `importance` | float | Importance score 0-1 |
 | `timestamp` | int64 | Creation timestamp (ms) |
 | `metadata` | string (JSON) | Extended metadata |
 
@@ -975,7 +998,7 @@ upgrade to **memory-lancedb-pro >= 1.0.14**. This plugin now coerces these value
 > **For OpenClaw users**: copy the code block below into your `AGENTS.md` so your agent enforces these rules automatically.
 
 ```markdown
-## Rule 1 — 双层记忆存储（铁律）
+## Rule 1 - 双层记忆存储（铁律）
 
 Every pitfall/lesson learned → IMMEDIATELY store TWO memories to LanceDB before moving on:
 
@@ -989,24 +1012,24 @@ Every pitfall/lesson learned → IMMEDIATELY store TWO memories to LanceDB befor
   Do NOT proceed to next topic until both are stored and verified.
 - Also update relevant SKILL.md files to prevent recurrence.
 
-## Rule 2 — LanceDB 卫生
+## Rule 2 - LanceDB 卫生
 
 Entries must be short and atomic (< 500 chars). Never store raw conversation summaries, large blobs, or duplicates.
 Prefer structured format with keywords for retrieval.
 
-## Rule 3 — Recall before retry
+## Rule 3 - Recall before retry
 
 On ANY tool failure, repeated error, or unexpected behavior, ALWAYS `memory_recall` with relevant keywords
 (error message, tool name, symptom) BEFORE retrying. LanceDB likely already has the fix.
 Blind retries waste time and repeat known mistakes.
 
-## Rule 4 — 编辑前确认目标代码库
+## Rule 4 - 编辑前确认目标代码库
 
 When working on memory plugins, confirm you are editing the intended package
 (e.g., `memory-lancedb-pro` vs built-in `memory-lancedb`) before making changes;
 use `memory_recall` + filesystem search to avoid patching the wrong repo.
 
-## Rule 5 — 插件代码变更必须清 jiti 缓存（MANDATORY）
+## Rule 5 - 插件代码变更必须清 jiti 缓存（MANDATORY）
 
 After modifying ANY `.ts` file under `plugins/`, MUST run `rm -rf /tmp/jiti/` BEFORE `openclaw gateway restart`.
 jiti caches compiled TS; restart alone loads STALE code. This has caused silent bugs multiple times.

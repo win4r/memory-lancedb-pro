@@ -214,10 +214,11 @@
               "jina",
               "siliconflow",
               "voyage",
-              "pinecone"
+              "pinecone",
+              "vllm"
             ],
             "default": "jina",
-            "description": "Reranker provider format. Determines request/response shape and auth header."
+            "description": "Reranker provider format. Determines request/response shape and auth header. Use 'vllm' for Docker Model Runner."
           },
           "candidatePoolSize": {
             "type": "integer",
@@ -641,7 +642,7 @@
     },
     "retrieval.rerankProvider": {
       "label": "Reranker Provider",
-      "help": "Provider format: jina (default), siliconflow, voyage, or pinecone",
+      "help": "Provider format: jina (default), siliconflow, voyage, pinecone, or vllm (Docker Model Runner)",
       "advanced": true
     },
     "retrieval.candidatePoolSize": {

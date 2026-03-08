@@ -18,7 +18,7 @@
 
 ## 📺 视频教程
 
-> **观看完整教程 — 涵盖安装、配置，以及混合检索的底层原理。**
+> **观看完整教程 - 涵盖安装、配置，以及混合检索的底层原理。**
 
 [![YouTube Video](https://img.shields.io/badge/YouTube-立即观看-red?style=for-the-badge&logo=youtube)](https://youtu.be/MtukF1C8epQ)
 🔗 **https://youtu.be/MtukF1C8epQ**
@@ -268,7 +268,7 @@ Query → BM25 FTS ─────┘
 - **智能分割**：在句子边界分块，支持可配置重叠区（默认 200 字符）
 - **平均嵌入**：分别 embed 每个块，再取平均向量保留语义
 - **优雅降级**：检测到 "Input length exceeds context length" 时自动重试分块
-- **配置开关**：`embedding.chunking` — 设为 `false` 可关闭（默认：遇到上下文超限自动开启）
+- **配置开关**：`embedding.chunking` - 设为 `false` 可关闭（默认：遇到上下文超限自动开启）
 - **适配各模型限制**：Jina（8192 tokens）、OpenAI（8191）、Gemini（2048）等
 
 详细实现参见 [`docs/long-context-chunking.md`](docs/long-context-chunking.md)。
@@ -293,9 +293,9 @@ Query → BM25 FTS ─────┘
   - 默认 `autoRecallExcludeReflection=true`，让 `<relevant-memories>` 与 `<inherited-rules>` 分离
   - 支持时间窗（`autoRecallMaxAgeDays`）和按归一化 key 的最近 N 条限制（`autoRecallMaxEntriesPerKey`）
 
-### 不想在对话中“显示长期记忆”？
+### 不想在对话中"显示长期记忆"？
 
-有时模型会把注入到上下文中的 `<relevant-memories>` 区块“原样输出”到回复里，从而出现你看到的“周期性显示长期记忆”。
+有时模型会把注入到上下文中的 `<relevant-memories>` 区块"原样输出"到回复里，从而出现你看到的"周期性显示长期记忆"。
 
 **方案 A（推荐）：关闭自动召回 autoRecall**
 
@@ -339,7 +339,9 @@ Query → BM25 FTS ─────┘
 > ```
 >
 > 详见 [Release Notes](https://github.com/win4r/memory-lancedb-pro/releases/tag/v1.1.0-beta.6)。欢迎通过 [GitHub Issues](https://github.com/win4r/memory-lancedb-pro/issues) 反馈问题。
-
+>
+> `dev` dist-tag 是实验性渠道，用于提前测试 smart-memory 相关能力，可能与主线 beta 不完全同步。
+ 
 ### AI 安装指引（防幻觉版）
 
 如果你是用 AI 按 README 操作，**不要假设任何默认值**。请先运行以下命令，并以真实输出为准：
@@ -366,7 +368,7 @@ Key 存储建议：
 - 不要把 key 提交到 git。
 - 使用 `${...}` 环境变量没问题，但务必确保运行 Gateway 的**服务进程环境**里真的有该变量（systemd/launchd/docker 往往不会继承你终端的 export）。
 
-### 什么是 “OpenClaw workspace”？
+### 什么是 "OpenClaw workspace"？
 
 在 OpenClaw 中，**agent workspace（工作区）** 是 Agent 的工作目录（默认：`~/.openclaw/workspace`）。
 根据官方文档，workspace 是 OpenClaw 的 **默认工作目录（cwd）**，因此 **相对路径会以 workspace 为基准解析**（除非你使用绝对路径）。
@@ -589,14 +591,14 @@ openclaw config get plugins.slots.memory
 
 ### 访问强化（1.0.26）
 
-为了让“经常被用到的记忆”衰减得更慢，检索器可以根据 **手动 recall 的频率**（类似间隔重复/记忆强化）来延长有效的 time-decay half-life。
+为了让"经常被用到的记忆"衰减得更慢，检索器可以根据 **手动 recall 的频率**（类似间隔重复/记忆强化）来延长有效的 time-decay half-life。
 
 配置项（位于 `retrieval` 下）：
-- `reinforcementFactor`（范围 0–2，默认 `0.5`）— 设为 `0` 可关闭
-- `maxHalfLifeMultiplier`（范围 1–10，默认 `3`）— 硬上限：有效 half-life ≤ 基础值 × multiplier
+- `reinforcementFactor`（范围 0-2，默认 `0.5`）- 设为 `0` 可关闭
+- `maxHalfLifeMultiplier`（范围 1-10，默认 `3`）- 硬上限：有效 half-life ≤ 基础值 × multiplier
 
 说明：
-- 强化逻辑只对白名单 `source: "manual"` 生效（用户/工具主动 recall），避免 auto-recall 意外“强化”噪声。
+- 强化逻辑只对白名单 `source: "manual"` 生效（用户/工具主动 recall），避免 auto-recall 意外"强化"噪声。
 
 ### Embedding 提供商
 
@@ -625,7 +627,7 @@ OpenClaw 会把每个 Agent 的完整会话自动落盘为 JSONL：
 - Hook：只投递一个很小的 task.json（毫秒级，不调用 LLM，不阻塞 `/new`）
 - Worker：systemd 常驻进程监听队列，读取 session `.jsonl`，用 Gemini **Map-Reduce** 抽取 0～20 条高信噪比记忆
 - 写入：通过 `openclaw memory-pro import` 写入 LanceDB Pro（插件内部仍会 embedding + 查重）
-- 中文关键词：每条记忆包含 `Keywords (zh)`，并遵循三要素（实体/动作/症状）。其中“实体关键词”必须从 transcript 原文逐字拷贝（禁止编造项目名）。
+- 中文关键词：每条记忆包含 `Keywords (zh)`，并遵循三要素（实体/动作/症状）。其中"实体关键词"必须从 transcript 原文逐字拷贝（禁止编造项目名）。
 - 通知：可选（可做到即使 0 条也通知）
 
 示例文件：
@@ -633,7 +635,7 @@ OpenClaw 会把每个 Agent 的完整会话自动落盘为 JSONL：
 
 ---
 
-Legacy 方案：本插件也提供一个安全的 extractor 脚本 `scripts/jsonl_distill.py`，配合 OpenClaw 的 `cron` + 独立 distiller agent，实现“增量蒸馏 → 高质量记忆入库”：（适合不依赖 `/new` 的全自动场景）
+Legacy 方案：本插件也提供一个安全的 extractor 脚本 `scripts/jsonl_distill.py`，配合 OpenClaw 的 `cron` + 独立 distiller agent，实现"增量蒸馏 → 高质量记忆入库"：（适合不依赖 `/new` 的全自动场景）
 
 - 只读取每个 JSONL 文件**新增尾巴**（byte offset cursor），避免重复和 token 浪费
 - 生成一个小型 batch JSON
@@ -733,7 +735,7 @@ openclaw cron add \
 
 ### scope 策略（非常重要）
 
-当蒸馏“所有 agents”时，务必显式设置 scope：
+当蒸馏"所有 agents"时，务必显式设置 scope：
 
 - 跨 agent 通用规则/偏好/坑 → `scope=global`
 - agent 私有 → `scope=agent:<agentId>`
@@ -889,7 +891,7 @@ LanceDB 表 `memories`：
 > **OpenClaw 用户**：将下方代码块复制到你的 `AGENTS.md` 中，让 Agent 自动遵守这些规则。
 
 ```markdown
-## Rule 1 — 双层记忆存储（铁律）
+## Rule 1 - 双层记忆存储（铁律）
 
 Every pitfall/lesson learned → IMMEDIATELY store TWO memories to LanceDB before moving on:
 
@@ -903,24 +905,24 @@ Every pitfall/lesson learned → IMMEDIATELY store TWO memories to LanceDB befor
   Do NOT proceed to next topic until both are stored and verified.
 - Also update relevant SKILL.md files to prevent recurrence.
 
-## Rule 2 — LanceDB 卫生
+## Rule 2 - LanceDB 卫生
 
 Entries must be short and atomic (< 500 chars). Never store raw conversation summaries, large blobs, or duplicates.
 Prefer structured format with keywords for retrieval.
 
-## Rule 3 — Recall before retry
+## Rule 3 - Recall before retry
 
 On ANY tool failure, repeated error, or unexpected behavior, ALWAYS `memory_recall` with relevant keywords
 (error message, tool name, symptom) BEFORE retrying. LanceDB likely already has the fix.
 Blind retries waste time and repeat known mistakes.
 
-## Rule 4 — 编辑前确认目标代码库
+## Rule 4 - 编辑前确认目标代码库
 
 When working on memory plugins, confirm you are editing the intended package
 (e.g., `memory-lancedb-pro` vs built-in `memory-lancedb`) before making changes;
 use `memory_recall` + filesystem search to avoid patching the wrong repo.
 
-## Rule 5 — 插件代码变更必须清 jiti 缓存（MANDATORY）
+## Rule 5 - 插件代码变更必须清 jiti 缓存（MANDATORY）
 
 After modifying ANY `.ts` file under `plugins/`, MUST run `rm -rf /tmp/jiti/` BEFORE `openclaw gateway restart`.
 jiti caches compiled TS; restart alone loads STALE code. This has caused silent bugs multiple times.
