@@ -281,10 +281,6 @@
             "type": "boolean",
             "default": true
           },
-          "writeLegacyCombined": {
-            "type": "boolean",
-            "default": true
-          },
           "injectMode": {
             "type": "string",
             "enum": [
@@ -569,11 +565,6 @@
     "memoryReflection.storeToLanceDB": {
       "label": "Store Reflection To LanceDB",
       "help": "Persist reflection event + item rows to LanceDB (effective only under memoryReflection strategy)",
-      "advanced": true
-    },
-    "memoryReflection.writeLegacyCombined": {
-      "label": "Write Legacy Combined Reflection",
-      "help": "Compatibility switch: also write legacy combined memory-reflection rows during migration.",
       "advanced": true
     },
     "memoryReflection.injectMode": {

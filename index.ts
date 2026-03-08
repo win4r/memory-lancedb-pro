@@ -29,11 +29,13 @@ import { resolveReflectionSessionSearchDirs, stripResetSuffix } from "./src/sess
 import {
   storeReflectionToLanceDB,
   loadAgentReflectionSlicesFromEntries,
+  loadAgentDerivedRowsWithScoresFromEntries,
   DEFAULT_REFLECTION_DERIVED_MAX_AGE_MS,
 } from "./src/reflection-store.js";
 import {
   extractReflectionLearningGovernanceCandidates,
   extractReflectionMappedMemoryItems,
+  extractReflectionOpenLoops,
 } from "./src/reflection-slices.js";
 import { createReflectionEventId } from "./src/reflection-event-store.js";
 import { buildReflectionMappedMetadata } from "./src/reflection-mapped-metadata.js";
@@ -98,7 +100,6 @@ interface PluginConfig {
   memoryReflection?: {
     enabled?: boolean;
     storeToLanceDB?: boolean;
-    writeLegacyCombined?: boolean;
     injectMode?: ReflectionInjectMode;
     agentId?: string;
     messageCount?: number;
@@ -187,6 +188,57 @@ const DEFAULT_REFLECTION_MAX_TRACKED_SESSIONS = 200;
 const DEFAULT_REFLECTION_ERROR_SCAN_MAX_CHARS = 8_000;
 const REFLECTION_FALLBACK_MARKER = "(fallback) Reflection generation failed; storing minimal pointer only.";
 const DIAG_BUILD_TAG = "memory-lancedb-pro-diag-20260308-0058";
+
+function buildReflectionDerivedFocusBlock(derivedLines: string[]): string {
+  const trimmed = derivedLines
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(0, 6);
+  if (trimmed.length === 0) return "";
+  return [
+    "<derived-focus>",
+    "Weighted recent derived execution deltas from reflection memory:",
+    ...trimmed.map((line, i) => `${i + 1}. ${line}`),
+    "</derived-focus>",
+  ].join("\n");
+}
+
+function buildReflectionOpenLoopsBlock(openLoopLines: string[]): string {
+  const trimmed = openLoopLines
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(0, 6);
+  if (trimmed.length === 0) return "";
+  return [
+    "<open-loops>",
+    "Fresh open loops / next actions from this reflection run:",
+    ...trimmed.map((line, i) => `${i + 1}. ${line}`),
+    "</open-loops>",
+  ].join("\n");
+}
+
+function buildSelfImprovementResetNote(params?: { openLoopsBlock?: string; derivedFocusBlock?: string }): string {
+  const openLoopsBlock = typeof params?.openLoopsBlock === "string" ? params.openLoopsBlock : "";
+  const derivedFocusBlock = typeof params?.derivedFocusBlock === "string" ? params.derivedFocusBlock : "";
+  const base = [
+    SELF_IMPROVEMENT_NOTE_PREFIX,
+    "- If anything was learned/corrected, log it now:",
+    "  - .learnings/LEARNINGS.md (corrections/best practices)",
+    "  - .learnings/ERRORS.md (failures/root causes)",
+    "- Distill reusable rules to AGENTS.md / SOUL.md / TOOLS.md.",
+    "- If reusable across tasks, extract a new skill from the learning.",
+  ];
+  if (openLoopsBlock) {
+    base.push("- Fresh run handoff:");
+    base.push(openLoopsBlock);
+  }
+  if (derivedFocusBlock) {
+    base.push("- Historical reflection-derived focus:");
+    base.push(derivedFocusBlock);
+  }
+  base.push("- Then proceed with the new session.");
+  return base.join("\n");
+}
 
 type ReflectionErrorSignal = {
   at: number;
@@ -1347,7 +1399,6 @@ const memoryLanceDBProPlugin = {
     const migrator = createMigrator(store);
 
     const reflectionErrorStateBySession = new Map<string, ReflectionErrorState>();
-    const reflectionDerivedBySession = new Map<string, { updatedAt: number; derived: string[] }>();
     const reflectionByAgentCache = new Map<string, { updatedAt: number; invariants: string[]; derived: string[] }>();
 
     const pruneOldestByUpdatedAt = <T extends { updatedAt: number }>(map: Map<string, T>, maxSize: number) => {
@@ -1366,13 +1417,7 @@ const memoryLanceDBProPlugin = {
           reflectionErrorStateBySession.delete(key);
         }
       }
-      for (const [key, state] of reflectionDerivedBySession.entries()) {
-        if (now - state.updatedAt > DEFAULT_REFLECTION_SESSION_TTL_MS) {
-          reflectionDerivedBySession.delete(key);
-        }
-      }
       pruneOldestByUpdatedAt(reflectionErrorStateBySession, DEFAULT_REFLECTION_MAX_TRACKED_SESSIONS);
-      pruneOldestByUpdatedAt(reflectionDerivedBySession, DEFAULT_REFLECTION_MAX_TRACKED_SESSIONS);
     };
 
     const getReflectionErrorState = (sessionKey: string): ReflectionErrorState => {
@@ -1701,6 +1746,7 @@ const memoryLanceDBProPlugin = {
     // ========================================================================
 
     if (config.selfImprovement?.enabled !== false) {
+      let registeredBeforeResetNoteHooks = false;
       api.registerHook("agent:bootstrap", async (event) => {
         try {
           const context = (event.context || {}) as Record<string, unknown>;
@@ -1743,7 +1789,8 @@ const memoryLanceDBProPlugin = {
         description: "Inject self-improvement reminder on agent bootstrap",
       });
 
-      if (config.selfImprovement?.beforeResetNote !== false) {
+      if (config.selfImprovement?.beforeResetNote !== false && config.sessionStrategy !== "memoryReflection") {
+        registeredBeforeResetNoteHooks = true;
         const appendSelfImprovementNote = async (event: any) => {
           try {
             const action = String(event?.action || "unknown");
@@ -1768,17 +1815,7 @@ const memoryLanceDBProPlugin = {
               return;
             }
 
-            event.messages.push(
-              [
-                SELF_IMPROVEMENT_NOTE_PREFIX,
-                "- If anything was learned/corrected, log it now:",
-                "  - .learnings/LEARNINGS.md (corrections/best practices)",
-                "  - .learnings/ERRORS.md (failures/root causes)",
-                "- Distill reusable rules to AGENTS.md / SOUL.md / TOOLS.md.",
-                "- If reusable across tasks, extract a new skill from the learning.",
-                "- Then proceed with the new session.",
-              ].join("\n")
-            );
+            event.messages.push(buildSelfImprovementResetNote());
             api.logger.info(
               `self-improvement: command:${action} injected note; messages=${event.messages.length}`
             );
@@ -1797,7 +1834,11 @@ const memoryLanceDBProPlugin = {
         });
       }
 
-      api.logger.info("self-improvement: integrated hooks registered (agent:bootstrap, command:new, command:reset)");
+      api.logger.info(
+        registeredBeforeResetNoteHooks
+          ? "self-improvement: integrated hooks registered (agent:bootstrap, command:new, command:reset)"
+          : "self-improvement: integrated hooks registered (agent:bootstrap)"
+      );
     }
 
     // ========================================================================
@@ -1815,7 +1856,6 @@ const memoryLanceDBProPlugin = {
       const reflectionDedupeErrorSignals = config.memoryReflection?.dedupeErrorSignals !== false;
       const reflectionInjectMode = config.memoryReflection?.injectMode ?? "inheritance+derived";
       const reflectionStoreToLanceDB = config.memoryReflection?.storeToLanceDB !== false;
-      const reflectionWriteLegacyCombined = config.memoryReflection?.writeLegacyCombined === true;
       const warnedInvalidReflectionAgentIds = new Set<string>();
 
       const resolveReflectionRunAgentId = (cfg: unknown, sourceAgentId: string): string => {
@@ -1895,56 +1935,26 @@ const memoryLanceDBProPlugin = {
       api.on("before_prompt_build", async (_event, ctx) => {
         const sessionKey = typeof ctx.sessionKey === "string" ? ctx.sessionKey : "";
         if (isInternalReflectionSessionKey(sessionKey)) return;
-        const agentId = typeof ctx.agentId === "string" && ctx.agentId.trim() ? ctx.agentId.trim() : "main";
         pruneReflectionSessionState();
 
-        const blocks: string[] = [];
-        if (reflectionInjectMode === "inheritance+derived") {
-          try {
-            const scopes = scopeManager.getAccessibleScopes(agentId);
-            const derivedCache = sessionKey ? reflectionDerivedBySession.get(sessionKey) : null;
-            const derivedLines = derivedCache?.derived?.length
-              ? derivedCache.derived
-              : (await loadAgentReflectionSlices(agentId, scopes)).derived;
-            if (derivedLines.length > 0) {
-              blocks.push(
-                [
-                  "<derived-focus>",
-                  "Weighted recent derived execution deltas from reflection memory:",
-                  ...derivedLines.slice(0, 6).map((line, i) => `${i + 1}. ${line}`),
-                  "</derived-focus>",
-                ].join("\n")
-              );
-            }
-          } catch (err) {
-            api.logger.warn(`memory-reflection: derived injection failed: ${String(err)}`);
-          }
-        }
-
-        if (sessionKey) {
-          const pending = getPendingReflectionErrorSignalsForPrompt(sessionKey, reflectionErrorReminderMaxEntries);
-          if (pending.length > 0) {
-            blocks.push(
-              [
-                "<error-detected>",
-                "A tool error was detected. Consider logging this to `.learnings/ERRORS.md` if it is non-trivial or likely to recur.",
-                "Recent error signals:",
-                ...pending.map((e, i) => `${i + 1}. [${e.toolName}] ${e.summary}`),
-                "</error-detected>",
-              ].join("\n")
-            );
-          }
-        }
-
-        if (blocks.length === 0) return;
-        return { prependContext: blocks.join("\n\n") };
+        if (!sessionKey) return;
+        const pending = getPendingReflectionErrorSignalsForPrompt(sessionKey, reflectionErrorReminderMaxEntries);
+        if (pending.length === 0) return;
+        return {
+          prependContext: [
+            "<error-detected>",
+            "A tool error was detected. Consider logging this to `.learnings/ERRORS.md` if it is non-trivial or likely to recur.",
+            "Recent error signals:",
+            ...pending.map((e, i) => `${i + 1}. [${e.toolName}] ${e.summary}`),
+            "</error-detected>",
+          ].join("\n"),
+        };
       }, { priority: 15 });
 
       api.on("session_end", (_event, ctx) => {
         const sessionKey = typeof ctx.sessionKey === "string" ? ctx.sessionKey.trim() : "";
         if (!sessionKey) return;
         reflectionErrorStateBySession.delete(sessionKey);
-        reflectionDerivedBySession.delete(sessionKey);
         pruneReflectionSessionState();
       }, { priority: 20 });
 
@@ -2057,6 +2067,41 @@ const memoryLanceDBProPlugin = {
             );
           }
 
+          let openLoopsBlock = "";
+          let derivedFocusBlock = "";
+          if (reflectionInjectMode === "inheritance+derived") {
+            openLoopsBlock = buildReflectionOpenLoopsBlock(extractReflectionOpenLoops(reflectionText));
+            try {
+              const scopes = scopeManager.getAccessibleScopes(sourceAgentId);
+              const historicalEntries = await store.list(scopes, undefined, 160, 0);
+              const historicalDerivedRows = loadAgentDerivedRowsWithScoresFromEntries({
+                entries: historicalEntries,
+                agentId: sourceAgentId,
+                now: nowTs,
+                deriveMaxAgeMs: DEFAULT_REFLECTION_DERIVED_MAX_AGE_MS,
+                limit: 10,
+              });
+              const historicalDerivedLines = historicalDerivedRows
+                .filter((row) => row.score > 0.3)
+                .map((row) => row.text);
+              derivedFocusBlock = buildReflectionDerivedFocusBlock(historicalDerivedLines);
+            } catch (err) {
+              api.logger.warn(`memory-reflection: derived-focus note build failed: ${String(err)}`);
+            }
+          }
+
+          if (config.selfImprovement?.enabled !== false && config.selfImprovement?.beforeResetNote !== false) {
+            if (!Array.isArray(event.messages)) {
+              api.logger.warn(`memory-reflection: command:${action} missing event.messages array; skip note inject`);
+            } else {
+              const exists = event.messages.some((m: unknown) => typeof m === "string" && m.includes(SELF_IMPROVEMENT_NOTE_PREFIX));
+              if (!exists) {
+                event.messages.push(buildSelfImprovementResetNote({ openLoopsBlock, derivedFocusBlock }));
+                api.logger.info(`memory-reflection: command:${action} injected handoff note; messages=${event.messages.length}`);
+              }
+            }
+          }
+
           const header = [
             `# Reflection: ${dateStr} ${timeHms} UTC`,
             "",
@@ -2166,7 +2211,7 @@ const memoryLanceDBProPlugin = {
           }
 
           if (reflectionStoreToLanceDB) {
-            const stored = await storeReflectionToLanceDB({
+            await storeReflectionToLanceDB({
               reflectionText,
               sessionKey,
               sessionId: currentSessionId || "unknown",
@@ -2178,23 +2223,12 @@ const memoryLanceDBProPlugin = {
               usedFallback: reflectionGenerated.usedFallback,
               eventId: reflectionEventId,
               sourceReflectionPath: relPath,
-              writeLegacyCombined: reflectionWriteLegacyCombined,
               embedPassage: (text) => embedder.embedPassage(text),
-              vectorSearch: (vector, limit, minScore, scopeFilter) =>
-                store.vectorSearch(vector, limit, minScore, scopeFilter),
               store: (entry) => store.store(entry),
             });
-            if (sessionKey && stored.slices.derived.length > 0) {
-              reflectionDerivedBySession.set(sessionKey, {
-                updatedAt: nowTs,
-                derived: stored.slices.derived,
-              });
-            }
             for (const cacheKey of reflectionByAgentCache.keys()) {
               if (cacheKey.startsWith(`${sourceAgentId}::`)) reflectionByAgentCache.delete(cacheKey);
             }
-          } else if (sessionKey && reflectionGenerated.usedFallback) {
-            reflectionDerivedBySession.delete(sessionKey);
           }
 
           const dailyPath = join(workspaceDir, "memory", `${dateStr}.md`);
@@ -2509,7 +2543,6 @@ export function parsePluginConfig(value: unknown): PluginConfig {
       ? {
         enabled: sessionStrategy === "memoryReflection",
         storeToLanceDB: reflectionStoreToLanceDB,
-        writeLegacyCombined: memoryReflectionRaw.writeLegacyCombined === true,
         injectMode: reflectionInjectMode,
         agentId: asNonEmptyString(memoryReflectionRaw.agentId),
         messageCount: reflectionMessageCount,
@@ -2526,7 +2559,6 @@ export function parsePluginConfig(value: unknown): PluginConfig {
       : {
         enabled: sessionStrategy === "memoryReflection",
         storeToLanceDB: reflectionStoreToLanceDB,
-        writeLegacyCombined: false,
         injectMode: "inheritance+derived",
         agentId: undefined,
         messageCount: reflectionMessageCount,
