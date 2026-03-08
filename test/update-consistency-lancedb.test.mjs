@@ -72,7 +72,7 @@ describe("MemoryStore update rollback (real LanceDB backend)", () => {
 
     await assert.rejects(
       store.update(entry.id, { text: "updated memory", vector: [1, 1, 1, 1] }),
-      /original record restored/,
+      /latest available record restored/,
     );
 
     restore();
@@ -81,7 +81,7 @@ describe("MemoryStore update rollback (real LanceDB backend)", () => {
     assert.equal((await store.list(["global"]))[0]?.text, "original memory");
   });
 
-  it("avoids data loss under concurrent updates when the later add fails", async () => {
+  it("preserves the latest committed value under concurrent update failure", async () => {
     const { store, entry } = await createStoreWithEntry();
 
     const secondDeleteQueued = deferred();
@@ -133,13 +133,13 @@ describe("MemoryStore update rollback (real LanceDB backend)", () => {
     secondDeleteGate.resolve();
     secondAddGate.resolve();
 
-    await assert.rejects(second, /original record restored/);
+    await assert.rejects(second, /latest available record restored/);
 
     restoreDelete();
     restoreAdd();
 
-    assert.equal((await store.getById(entry.id))?.text, "original memory");
-    assert.equal((await store.list(["global"]))[0]?.text, "original memory");
+    assert.equal((await store.getById(entry.id))?.text, "update from A");
+    assert.equal((await store.list(["global"]))[0]?.text, "update from A");
   });
 
   it("access-tracker style metadata update preserves the row on write failure", async () => {
