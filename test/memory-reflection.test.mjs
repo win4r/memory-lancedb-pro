@@ -32,14 +32,19 @@ const {
   storeReflectionToLanceDB,
   loadAgentReflectionSlicesFromEntries,
   loadAgentDerivedRowsWithScoresFromEntries,
+  loadAgentDerivedFocusRowsForHandoffFromEntries,
   loadReflectionMappedRowsFromEntries,
 } = jiti("../src/reflection-store.ts");
+const { normalizeReflectionSoftKey } = jiti("../src/reflection-normalize.ts");
 const { rankDynamicReflectionRecallFromEntries } = jiti("../src/reflection-recall.ts");
+const { selectFinalAutoRecallResults } = jiti("../src/auto-recall-final-selection.ts");
 const {
   createDynamicRecallSessionState,
   clearDynamicRecallSessionState,
   orchestrateDynamicRecall,
+  normalizeRecallTextKey,
 } = jiti("../src/recall-engine.ts");
+const { shouldSkipRetrieval } = jiti("../src/adaptive-retrieval.ts");
 const {
   REFLECTION_INVARIANT_DECAY_MIDPOINT_DAYS,
   REFLECTION_INVARIANT_DECAY_K,
@@ -179,6 +184,28 @@ describe("memory reflection", () => {
       assert.match(conversation, /assistant: Acknowledged\. I will keep responses concise and factual\./);
       assert.doesNotMatch(conversation, /old reset snapshot/);
       assert.doesNotMatch(conversation, /^user:\s*\/new/m);
+    });
+  });
+
+  describe("adaptive retrieval control prompt skip gate", () => {
+    it("skips session-start boilerplate containing /new or /reset", () => {
+      const prompt = "A new session was started via /new or /reset. Keep this in mind.";
+      assert.equal(shouldSkipRetrieval(prompt), true);
+    });
+
+    it("skips startup boilerplate containing session startup sequence text", () => {
+      const prompt = "Execute your Session Startup sequence now before continuing.";
+      assert.equal(shouldSkipRetrieval(prompt), true);
+    });
+
+    it("skips /note handoff/control prompts", () => {
+      const prompt = "Control wrapper line\n/note self-improvement (before reset): preserve incident timeline.";
+      assert.equal(shouldSkipRetrieval(prompt), true);
+    });
+
+    it("does not skip a normal user task prompt", () => {
+      const prompt = "Please draft a rollback checklist for mosdns and rclone incidents.";
+      assert.equal(shouldSkipRetrieval(prompt), false);
     });
   });
 
@@ -649,6 +676,314 @@ describe("memory reflection", () => {
       assert.ok(highRow && highRow.score > 0.3);
       assert.ok(lowRow && lowRow.score < 0.3);
     });
+
+    it("applies non-linear saturation so exact duplicates do not scale linearly", () => {
+      const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+      const day = 24 * 60 * 60 * 1000;
+      const repeatedLine = "Repeat post-check verification path before declaring success.";
+
+      const entries = Array.from({ length: 12 }, (_, idx) =>
+        makeEntry({
+          timestamp: now - (idx % 2) * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "derived",
+            agentId: "main",
+            storedAt: now - (idx % 2) * day,
+            decayMidpointDays: 7,
+            decayK: 0.65,
+            baseWeight: 1,
+            quality: 1,
+            usedFallback: false,
+          },
+        })
+      );
+      for (const entry of entries) {
+        entry.text = repeatedLine;
+      }
+
+      const rows = loadAgentDerivedRowsWithScoresFromEntries({
+        entries,
+        agentId: "main",
+        now,
+        deriveMaxAgeMs: 30 * day,
+        limit: 36,
+      });
+
+      const repeated = rows.find((row) => row.text === repeatedLine);
+      assert.ok(repeated);
+
+      const singleItemScore = computeReflectionScore({
+        ageDays: 1,
+        midpointDays: 7,
+        k: 0.65,
+        baseWeight: 1,
+        quality: 1,
+        usedFallback: false,
+      });
+      const naiveLinear = singleItemScore * 12;
+      assert.ok(repeated.score < naiveLinear * 0.25);
+      assert.ok(repeated.score > singleItemScore * 0.8);
+    });
+
+    it("prefers representative non-fallback text instead of always taking the newest variant", () => {
+      const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+      const day = 24 * 60 * 60 * 1000;
+      const entries = [
+        makeEntry({
+          timestamp: now - 2 * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "derived",
+            agentId: "main",
+            storedAt: now - 2 * day,
+            decayMidpointDays: 7,
+            decayK: 0.65,
+            baseWeight: 1,
+            quality: 1,
+            usedFallback: false,
+          },
+        }),
+        makeEntry({
+          timestamp: now - 1 * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "derived",
+            agentId: "main",
+            storedAt: now - 1 * day,
+            decayMidpointDays: 7,
+            decayK: 0.65,
+            baseWeight: 1,
+            quality: 1,
+            usedFallback: true,
+          },
+        }),
+      ];
+      entries[0].text = "Use deterministic post-check command list.";
+      entries[1].text = "Use deterministic post-check command list!";
+
+      const rows = loadAgentDerivedRowsWithScoresFromEntries({
+        entries,
+        agentId: "main",
+        now,
+        deriveMaxAgeMs: 30 * day,
+        limit: 36,
+      });
+
+      assert.equal(rows[0].text, "Use deterministic post-check command list.");
+    });
+
+    it("expands historical shortlist beyond 24 so deeper candidates remain available", () => {
+      const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+      const day = 24 * 60 * 60 * 1000;
+
+      const entries = Array.from({ length: 32 }, (_, idx) =>
+        makeEntry({
+          timestamp: now - (idx % 4) * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "derived",
+            agentId: "main",
+            storedAt: now - (idx % 4) * day,
+            decayMidpointDays: 7,
+            decayK: 0.65,
+            baseWeight: 1,
+            quality: 0.95,
+            usedFallback: false,
+          },
+        })
+      );
+      for (let i = 0; i < entries.length; i += 1) {
+        entries[i].text = `Shortlist candidate ${i + 1}: preserve deterministic verification evidence.`;
+      }
+
+      const rows10 = loadAgentDerivedRowsWithScoresFromEntries({
+        entries,
+        agentId: "main",
+        now,
+        deriveMaxAgeMs: 30 * day,
+        limit: 10,
+      });
+      const rows24 = loadAgentDerivedRowsWithScoresFromEntries({
+        entries,
+        agentId: "main",
+        now,
+        deriveMaxAgeMs: 30 * day,
+        limit: 24,
+      });
+      const rows36 = loadAgentDerivedRowsWithScoresFromEntries({
+        entries,
+        agentId: "main",
+        now,
+        deriveMaxAgeMs: 30 * day,
+        limit: 36,
+      });
+
+      assert.equal(rows10.length, 10);
+      assert.equal(rows24.length, 24);
+      assert.equal(rows36.length, 32);
+      assert.ok(rows36.slice(24).length > 0);
+      assert.ok(rows36.slice(24).every((row) => typeof row.text === "string" && row.text.length > 0));
+    });
+
+    it("keeps final derived-focus selection capped at 13 without applying a hard score threshold", () => {
+      const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+      const day = 24 * 60 * 60 * 1000;
+
+      const strongEntries = Array.from({ length: 12 }, (_, idx) =>
+        makeEntry({
+          timestamp: now - (idx % 3) * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "derived",
+            agentId: "main",
+            storedAt: now - (idx % 3) * day,
+            decayMidpointDays: 7,
+            decayK: 0.65,
+            baseWeight: 1,
+            quality: 0.95,
+            usedFallback: false,
+          },
+        })
+      );
+      strongEntries.forEach((entry, idx) => {
+        entry.text = `Strong candidate ${idx + 1}: keep post-check output deterministic.`;
+      });
+
+      const borderline = makeEntry({
+        timestamp: now - 35 * day,
+        metadata: {
+          type: "memory-reflection-item",
+          itemKind: "derived",
+          agentId: "main",
+          storedAt: now - 35 * day,
+          decayMidpointDays: 7,
+          decayK: 0.65,
+          baseWeight: 1,
+          quality: 0.6,
+          usedFallback: false,
+        },
+      });
+      borderline.text = "Borderline low-score candidate that should still remain eligible without score gating.";
+
+      const veryOldEntries = Array.from({ length: 8 }, (_, idx) =>
+        makeEntry({
+          timestamp: now - (70 + idx) * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "derived",
+            agentId: "main",
+            storedAt: now - (70 + idx) * day,
+            decayMidpointDays: 7,
+            decayK: 0.65,
+            baseWeight: 1,
+            quality: 0.55,
+            usedFallback: false,
+          },
+        })
+      );
+      veryOldEntries.forEach((entry, idx) => {
+        entry.text = `Very old candidate ${idx + 1}: likely ranked below borderline.`;
+      });
+
+      const rows = loadAgentDerivedFocusRowsForHandoffFromEntries({
+        entries: [...strongEntries, borderline, ...veryOldEntries],
+        agentId: "main",
+        now,
+        deriveMaxAgeMs: 90 * day,
+        shortlistLimit: 36,
+        finalLimit: 13,
+      });
+      const borderlineRow = rows.find((row) => row.text.includes("Borderline low-score candidate"));
+
+      assert.equal(rows.length, 13);
+      assert.ok(borderlineRow);
+      assert.ok(borderlineRow.score < 0.3);
+    });
+
+    it("uses diversity-aware ordering so near-duplicate soft-keys do not saturate the final output", () => {
+      const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+      const day = 24 * 60 * 60 * 1000;
+      const similarLines = [
+        "Validate /root/work mount health after service restart.",
+        "Validate root/work mount health after service restart.",
+        "validate root work mount health after service restart",
+        "Validate root-work mount health after service restart.",
+        "Validate root (work) mount health after service restart.",
+        "Validate root\\work mount health after service restart.",
+      ];
+      const diverseLines = [
+        "Keep DNS post-check output with getent host evidence.",
+        "Track proxy failover endpoint and retry timing explicitly.",
+        "Record exact UTC timestamps for each recovery action.",
+        "Confirm reflection handoff note does not include stale loops.",
+        "Gate risky service changes behind focused preflight checks.",
+        "Capture one-line rollback steps before applying infra edits.",
+        "Write recovery commands in execution order to avoid skipped steps.",
+        "Tag unresolved blockers explicitly so follow-up runs can prioritize them.",
+        "Capture exact command output snippets that prove service recovery.",
+        "Prefer a minimal blast-radius rollback command before retries.",
+        "Record dependency assumptions before changing shared config files.",
+        "Keep one deterministic verification command per subsystem.",
+        "Document expected service states before applying risky edits.",
+        "List one explicit next owner/action for each open loop.",
+      ];
+
+      const entries = [];
+      for (const line of similarLines) {
+        const entry = makeEntry({
+          timestamp: now - 1 * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "derived",
+            agentId: "main",
+            storedAt: now - 1 * day,
+            decayMidpointDays: 7,
+            decayK: 0.65,
+            baseWeight: 1,
+            quality: 1,
+            usedFallback: false,
+          },
+        });
+        entry.text = line;
+        entries.push(entry);
+      }
+      for (const line of diverseLines) {
+        const entry = makeEntry({
+          timestamp: now - 1 * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "derived",
+            agentId: "main",
+            storedAt: now - 1 * day,
+            decayMidpointDays: 7,
+            decayK: 0.65,
+            baseWeight: 1,
+            quality: 0.62,
+            usedFallback: false,
+          },
+        });
+        entry.text = line;
+        entries.push(entry);
+      }
+
+      const rows = loadAgentDerivedFocusRowsForHandoffFromEntries({
+        entries,
+        agentId: "main",
+        now,
+        deriveMaxAgeMs: 30 * day,
+        shortlistLimit: 36,
+        finalLimit: 13,
+      });
+      const duplicateSoftKey = normalizeReflectionSoftKey(similarLines[0]);
+
+      const duplicateSoftKeyCount = rows.filter((row) => normalizeReflectionSoftKey(row.text) === duplicateSoftKey).length;
+      const uniqueSoftKeys = new Set(rows.map((row) => normalizeReflectionSoftKey(row.text)));
+
+      assert.equal(rows.length, 13);
+      assert.equal(duplicateSoftKeyCount, 1);
+      assert.ok(uniqueSoftKeys.size >= 12);
+    });
   });
 
   describe("mapped reflection metadata and ranking", () => {
@@ -765,6 +1100,358 @@ describe("memory reflection", () => {
     });
   });
 
+  describe("generic auto-recall final selection", () => {
+    function makeRetrievalResult({ id, text, score, category, scope, timestamp, vector = [] }) {
+      return {
+        entry: {
+          id,
+          text,
+          category,
+          scope,
+          timestamp,
+          vector,
+          importance: 0.8,
+          metadata: "{}",
+        },
+        score,
+        sources: {},
+      };
+    }
+
+    it("keeps strongest rank-1 while reducing duplicate saturation with light category/scope coverage", () => {
+      const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+      const day = 24 * 60 * 60 * 1000;
+      const rows = [
+        makeRetrievalResult({
+          id: "dup-1",
+          text: "Verify DNS and mount health after service restart.",
+          score: 0.99,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+        }),
+        makeRetrievalResult({
+          id: "dup-2",
+          text: "Verify dns and mount health after service restart!",
+          score: 0.985,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+        }),
+        makeRetrievalResult({
+          id: "dup-3",
+          text: "verify dns mount health after service restart",
+          score: 0.98,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+        }),
+        makeRetrievalResult({
+          id: "decision-1",
+          text: "Record rollback command before changing service units.",
+          score: 0.95,
+          category: "decision",
+          scope: "global",
+          timestamp: now - 2 * day,
+        }),
+        makeRetrievalResult({
+          id: "pref-1",
+          text: "Prefer concise post-check summaries in final responses.",
+          score: 0.945,
+          category: "preference",
+          scope: "agent:main",
+          timestamp: now - 1 * day,
+        }),
+        makeRetrievalResult({
+          id: "entity-1",
+          text: "Service dependency map includes mosdns and rclone.",
+          score: 0.94,
+          category: "entity",
+          scope: "project:ops",
+          timestamp: now - 3 * day,
+        }),
+      ];
+
+      const selected = selectFinalAutoRecallResults(rows, { topK: 4, now });
+
+      assert.equal(selected.length, 4);
+      assert.equal(selected[0].entry.id, "dup-1");
+
+      const duplicateKey = normalizeRecallTextKey(rows[0].entry.text);
+      const duplicateCount = selected.filter((row) => normalizeRecallTextKey(row.entry.text) === duplicateKey).length;
+      assert.equal(duplicateCount, 1);
+      assert.ok(new Set(selected.map((row) => row.entry.category)).size >= 3);
+      assert.ok(new Set(selected.map((row) => row.entry.scope)).size >= 2);
+    });
+
+    it("is deterministic for the same candidate set regardless of input order", () => {
+      const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+      const day = 24 * 60 * 60 * 1000;
+      const rows = [
+        makeRetrievalResult({
+          id: "dup-1",
+          text: "Keep DNS and mount post-checks in recovery flow.",
+          score: 0.97,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+        }),
+        makeRetrievalResult({
+          id: "dup-2",
+          text: "Keep dns and mount post-checks in recovery flow!",
+          score: 0.965,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+        }),
+        makeRetrievalResult({
+          id: "decision-1",
+          text: "Log rollback command and expected service state before edits.",
+          score: 0.94,
+          category: "decision",
+          scope: "global",
+          timestamp: now - 2 * day,
+        }),
+        makeRetrievalResult({
+          id: "pref-1",
+          text: "Respond with concise and factual status updates.",
+          score: 0.938,
+          category: "preference",
+          scope: "agent:main",
+          timestamp: now - 1 * day,
+        }),
+      ];
+
+      const forward = selectFinalAutoRecallResults(rows, { topK: 3, now });
+      const reversed = selectFinalAutoRecallResults([...rows].reverse(), { topK: 3, now });
+
+      assert.deepEqual(
+        forward.map((row) => row.entry.id),
+        reversed.map((row) => row.entry.id)
+      );
+    });
+
+    it("suppresses lexical-overlap paraphrases even when normalized keys differ", () => {
+      const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+      const day = 24 * 60 * 60 * 1000;
+      const rows = [
+        makeRetrievalResult({
+          id: "dup-1",
+          text: "Keep DNS/mount post-check command list after service restart.",
+          score: 0.99,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+        }),
+        makeRetrievalResult({
+          id: "dup-2",
+          text: "Keep DNS mount post check command list after service restart",
+          score: 0.987,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+        }),
+        makeRetrievalResult({
+          id: "dup-3",
+          text: "Keep DNS-mount post check command list after service restart",
+          score: 0.984,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+        }),
+        makeRetrievalResult({
+          id: "decision-1",
+          text: "Write rollback command before editing service unit files.",
+          score: 0.955,
+          category: "decision",
+          scope: "global",
+          timestamp: now - 2 * day,
+        }),
+        makeRetrievalResult({
+          id: "pref-1",
+          text: "Prefer concise status updates after mandatory verification checks.",
+          score: 0.951,
+          category: "preference",
+          scope: "agent:main",
+          timestamp: now - 2 * day,
+        }),
+      ];
+
+      const selected = selectFinalAutoRecallResults(rows, { topK: 3, now });
+
+      assert.equal(selected.length, 3);
+      assert.equal(selected[0].entry.id, "dup-1");
+      assert.equal(selected.filter((row) => row.entry.id.startsWith("dup-")).length, 1);
+      assert.ok(selected.some((row) => row.entry.id === "decision-1"));
+      assert.ok(selected.some((row) => row.entry.id === "pref-1"));
+    });
+
+    it("suppresses semantic redundancy while preserving strongest top1", () => {
+      const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+      const day = 24 * 60 * 60 * 1000;
+      const rows = [
+        makeRetrievalResult({
+          id: "sem-1",
+          text: "Use rollback checklist before restarting critical services.",
+          score: 0.992,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+          vector: [1, 0, 0, 0],
+        }),
+        makeRetrievalResult({
+          id: "sem-2",
+          text: "Maintain pre-restart safeguards for high-impact daemons.",
+          score: 0.989,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+          vector: [0.995, 0.005, 0, 0],
+        }),
+        makeRetrievalResult({
+          id: "sem-3",
+          text: "Record recovery expectations before applying config edits.",
+          score: 0.987,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+          vector: [0.996, 0.004, 0, 0],
+        }),
+        makeRetrievalResult({
+          id: "decision-1",
+          text: "Run post-check commands and store evidence timestamps.",
+          score: 0.956,
+          category: "decision",
+          scope: "global",
+          timestamp: now - 2 * day,
+          vector: [0, 1, 0, 0],
+        }),
+        makeRetrievalResult({
+          id: "pref-1",
+          text: "Keep responses concise and report only verified outcomes.",
+          score: 0.954,
+          category: "preference",
+          scope: "agent:main",
+          timestamp: now - 2 * day,
+          vector: [0, 0, 1, 0],
+        }),
+      ];
+
+      const selected = selectFinalAutoRecallResults(rows, { topK: 3, now });
+
+      assert.equal(selected.length, 3);
+      assert.equal(selected[0].entry.id, "sem-1");
+      assert.equal(selected.filter((row) => row.entry.id.startsWith("sem-")).length, 1);
+      assert.ok(selected.some((row) => row.entry.id === "decision-1"));
+      assert.ok(selected.some((row) => row.entry.id === "pref-1"));
+    });
+
+    it("keeps deterministic output under reversed order when semantic penalties are active", () => {
+      const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+      const day = 24 * 60 * 60 * 1000;
+      const rows = [
+        makeRetrievalResult({
+          id: "sem-1",
+          text: "Store rollback checks before service restarts.",
+          score: 0.986,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+          vector: [1, 0, 0, 0],
+        }),
+        makeRetrievalResult({
+          id: "sem-2",
+          text: "Keep safety checklist in place ahead of daemon restarts.",
+          score: 0.983,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+          vector: [0.998, 0.002, 0, 0],
+        }),
+        makeRetrievalResult({
+          id: "decision-1",
+          text: "Record service state before changing systemd units.",
+          score: 0.95,
+          category: "decision",
+          scope: "global",
+          timestamp: now - 2 * day,
+          vector: [0, 1, 0, 0],
+        }),
+        makeRetrievalResult({
+          id: "pref-1",
+          text: "Keep final status reports concise and factual.",
+          score: 0.948,
+          category: "preference",
+          scope: "agent:main",
+          timestamp: now - 2 * day,
+          vector: [0, 0, 1, 0],
+        }),
+      ];
+
+      const forward = selectFinalAutoRecallResults(rows, { topK: 3, now });
+      const reversed = selectFinalAutoRecallResults([...rows].reverse(), { topK: 3, now });
+
+      assert.deepEqual(
+        forward.map((row) => row.entry.id),
+        reversed.map((row) => row.entry.id)
+      );
+    });
+
+    it("falls back safely to lexical-only behavior when vectors are missing or invalid", () => {
+      const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+      const day = 24 * 60 * 60 * 1000;
+      const rows = [
+        makeRetrievalResult({
+          id: "dup-1",
+          text: "Keep DNS/mount checks mandatory after service edits.",
+          score: 0.99,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+          vector: [],
+        }),
+        makeRetrievalResult({
+          id: "dup-2",
+          text: "Keep DNS mount checks mandatory after service edits.",
+          score: 0.987,
+          category: "fact",
+          scope: "global",
+          timestamp: now - 1 * day,
+          vector: [Number.NaN, 1, 2],
+        }),
+        makeRetrievalResult({
+          id: "decision-1",
+          text: "Write rollback plan before changing service units.",
+          score: 0.955,
+          category: "decision",
+          scope: "global",
+          timestamp: now - 2 * day,
+          vector: undefined,
+        }),
+        makeRetrievalResult({
+          id: "pref-1",
+          text: "Report only verified outcomes in short status updates.",
+          score: 0.951,
+          category: "preference",
+          scope: "agent:main",
+          timestamp: now - 2 * day,
+          vector: new Float32Array([0, 1, 0, 0]),
+        }),
+      ];
+
+      const selected = selectFinalAutoRecallResults(rows, { topK: 3, now });
+      const reversed = selectFinalAutoRecallResults([...rows].reverse(), { topK: 3, now });
+
+      assert.equal(selected.length, 3);
+      assert.equal(selected[0].entry.id, "dup-1");
+      assert.equal(selected.filter((row) => row.entry.id.startsWith("dup-")).length, 1);
+      assert.deepEqual(
+        selected.map((row) => row.entry.id),
+        reversed.map((row) => row.entry.id)
+      );
+    });
+  });
+
   describe("dynamic reflection recall ranking", () => {
     it("filters stale rows by time window", () => {
       const now = Date.UTC(2026, 2, 8);
@@ -857,16 +1544,228 @@ describe("memory reflection", () => {
       assert.equal(capped[0].repeatCount, 10);
       assert.equal(uncapped[0].repeatCount, 12);
       assert.ok(uncapped[0].score > capped[0].score);
+      assert.ok(Number.isFinite(capped[0].score));
+      assert.ok(capped[0].score > 0);
+    });
 
-      const singleScore = computeReflectionScore({
-        ageDays: 0,
-        midpointDays: 45,
-        k: 0.22,
-        baseWeight: 1.1,
-        quality: 1,
-        usedFallback: false,
+    it("reuses helper representative selection so newer fallback phrasing is not always preferred", () => {
+      const now = Date.UTC(2026, 2, 8);
+      const day = 24 * 60 * 60 * 1000;
+      const entries = [
+        makeEntry({
+          timestamp: now - 2 * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "invariant",
+            agentId: "main",
+            storedAt: now - 2 * day,
+            decayMidpointDays: 45,
+            decayK: 0.22,
+            baseWeight: 1.1,
+            quality: 1,
+            usedFallback: false,
+          },
+        }),
+        makeEntry({
+          timestamp: now - 1 * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "invariant",
+            agentId: "main",
+            storedAt: now - 1 * day,
+            decayMidpointDays: 45,
+            decayK: 0.22,
+            baseWeight: 1.1,
+            quality: 1,
+            usedFallback: true,
+          },
+        }),
+      ];
+      entries[0].text = "Always run DNS and mount post-checks after service restarts.";
+      entries[1].text = "Always run DNS and mount post-checks after service restarts!";
+
+      const rows = rankDynamicReflectionRecallFromEntries(entries, {
+        agentId: "main",
+        includeKinds: ["invariant"],
+        maxAgeMs: 90 * day,
+        maxEntriesPerKey: 10,
+        topK: 6,
+        minScore: 0,
+        now,
       });
-      assert.equal(capped[0].score, Number((singleScore * 10).toFixed(6)));
+
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].text, "Always run DNS and mount post-checks after service restarts.");
+      assert.equal(rows[0].repeatCount, 2);
+    });
+
+    it("preserves kind identity by partitioning aggregation with kind + strictKey semantics", () => {
+      const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+      const day = 24 * 60 * 60 * 1000;
+      const entries = [
+        makeEntry({
+          timestamp: now - 2 * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "invariant",
+            agentId: "main",
+            storedAt: now - 2 * day,
+            decayMidpointDays: 45,
+            decayK: 0.22,
+            baseWeight: 1.1,
+            quality: 1,
+            usedFallback: false,
+          },
+        }),
+        makeEntry({
+          timestamp: now - 1 * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "invariant",
+            agentId: "main",
+            storedAt: now - 1 * day,
+            decayMidpointDays: 45,
+            decayK: 0.22,
+            baseWeight: 1.1,
+            quality: 1,
+            usedFallback: false,
+          },
+        }),
+        makeEntry({
+          timestamp: now - 2 * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "derived",
+            agentId: "main",
+            storedAt: now - 2 * day,
+            decayMidpointDays: 7,
+            decayK: 0.65,
+            baseWeight: 1,
+            quality: 1,
+            usedFallback: false,
+          },
+        }),
+        makeEntry({
+          timestamp: now - 1 * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "derived",
+            agentId: "main",
+            storedAt: now - 1 * day,
+            decayMidpointDays: 7,
+            decayK: 0.65,
+            baseWeight: 1,
+            quality: 1,
+            usedFallback: false,
+          },
+        }),
+      ];
+      entries[0].text = "Keep DNS and mount post-check evidence after service changes.";
+      entries[1].text = "Keep DNS and mount post-check evidence after service changes!";
+      entries[2].text = "Keep DNS and mount post-check evidence after service changes.";
+      entries[3].text = "Keep DNS and mount post-check evidence after service changes!";
+
+      const rows = rankDynamicReflectionRecallFromEntries(entries, {
+        agentId: "main",
+        includeKinds: ["invariant", "derived"],
+        maxAgeMs: 90 * day,
+        maxEntriesPerKey: 1,
+        topK: 6,
+        minScore: 0,
+        now,
+      });
+
+      assert.equal(rows.length, 2);
+      assert.deepEqual(
+        [...new Set(rows.map((row) => row.kind))].sort(),
+        ["derived", "invariant"]
+      );
+      for (const row of rows) {
+        assert.match(row.id, /^reflection:(derived|invariant)::/);
+      }
+      assert.equal(new Set(rows.map((row) => row.id)).size, 2);
+      assert.equal(new Set(rows.map((row) => normalizeReflectionSoftKey(row.text))).size, 1);
+    });
+
+    it("reuses diversity-aware final ordering in recall and keeps deterministic output", () => {
+      const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+      const day = 24 * 60 * 60 * 1000;
+      const similarLines = [
+        "Validate /root/work mount health after service restart.",
+        "Validate root/work mount health after service restart.",
+        "validate root work mount health after service restart",
+        "Validate root-work mount health after service restart.",
+      ];
+      const diverseLines = [
+        "Keep DNS post-check output with getent host evidence.",
+        "Record exact UTC timestamps for each recovery action.",
+        "Capture exact command output snippets that prove service recovery.",
+        "Prefer a minimal blast-radius rollback command before retries.",
+        "Document expected service states before applying risky edits.",
+      ];
+
+      const entries = [];
+      for (const line of similarLines) {
+        const entry = makeEntry({
+          timestamp: now - 1 * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "invariant",
+            agentId: "main",
+            storedAt: now - 1 * day,
+            decayMidpointDays: 45,
+            decayK: 0.22,
+            baseWeight: 1.1,
+            quality: 1,
+            usedFallback: false,
+          },
+        });
+        entry.text = line;
+        entries.push(entry);
+      }
+
+      for (const line of diverseLines) {
+        const entry = makeEntry({
+          timestamp: now - 1 * day,
+          metadata: {
+            type: "memory-reflection-item",
+            itemKind: "invariant",
+            agentId: "main",
+            storedAt: now - 1 * day,
+            decayMidpointDays: 45,
+            decayK: 0.22,
+            baseWeight: 1.1,
+            quality: 0.6,
+            usedFallback: false,
+          },
+        });
+        entry.text = line;
+        entries.push(entry);
+      }
+
+      const forward = rankDynamicReflectionRecallFromEntries(entries, {
+        agentId: "main",
+        includeKinds: ["invariant"],
+        maxAgeMs: 90 * day,
+        maxEntriesPerKey: 10,
+        topK: 5,
+        minScore: 0,
+        now,
+      });
+      const reversed = rankDynamicReflectionRecallFromEntries([...entries].reverse(), {
+        agentId: "main",
+        includeKinds: ["invariant"],
+        maxAgeMs: 90 * day,
+        maxEntriesPerKey: 10,
+        topK: 5,
+        minScore: 0,
+        now,
+      });
+
+      const duplicateSoftKey = normalizeReflectionSoftKey(similarLines[0]);
+      const duplicateSoftKeyCount = forward.filter((row) => normalizeReflectionSoftKey(row.text) === duplicateSoftKey).length;
+      assert.equal(duplicateSoftKeyCount, 1);
+      assert.deepEqual(forward, reversed);
     });
   });
 
@@ -1107,10 +2006,10 @@ describe("memory reflection", () => {
       rmSync(workspaceDir, { recursive: true, force: true });
     });
 
-    it("keeps inherited-rules in before_agent_start and builds note with fresh open-loops + historical derived-focus", async () => {
-      const beforeAgentStartHooks = harness.eventHandlers.get("before_agent_start") || [];
-      assert.equal(beforeAgentStartHooks.length, 1);
-      const inheritedResult = await beforeAgentStartHooks[0].handler({}, {
+    it("injects inherited-rules in before_prompt_build and builds note with fresh open-loops + historical derived-focus", async () => {
+      const beforePromptHooks = harness.eventHandlers.get("before_prompt_build") || [];
+      assert.equal(beforePromptHooks.length, 1);
+      const inheritedResult = await beforePromptHooks[0].handler({}, {
         sessionKey: "agent:main:session:s1",
         agentId: "main",
       });
@@ -1149,7 +2048,7 @@ describe("memory reflection", () => {
       assert.doesNotMatch(messages[0], /Historical stale follow-up should be filtered\./);
     });
 
-    it("keeps error-detected in before_prompt_build without derived-focus", async () => {
+    it("keeps error-detected in before_prompt_build and coexists with inherited-rules", async () => {
       const afterToolHooks = harness.eventHandlers.get("after_tool_call") || [];
       const beforePromptHooks = harness.eventHandlers.get("before_prompt_build") || [];
       assert.equal(afterToolHooks.length, 1);
@@ -1164,6 +2063,7 @@ describe("memory reflection", () => {
         sessionKey: "agent:main:session:s1",
         agentId: "main",
       });
+      assert.match(promptResult.prependContext, /<inherited-rules>/);
       assert.match(promptResult.prependContext, /<error-detected>/);
       assert.match(promptResult.prependContext, /\[shell\]/);
       assert.doesNotMatch(promptResult.prependContext, /<derived-focus>/);
@@ -1310,27 +2210,32 @@ describe("memory reflection", () => {
       });
       memoryLanceDBProPlugin.register(fixedHarness.api);
 
-      const hooks = fixedHarness.eventHandlers.get("before_agent_start") || [];
-      const outputs = await Promise.all(hooks.map((hook) => hook.handler(
+      const autoRecallHooks = fixedHarness.eventHandlers.get("before_agent_start") || [];
+      assert.equal(autoRecallHooks.length, 1);
+      const promptHooks = fixedHarness.eventHandlers.get("before_prompt_build") || [];
+      assert.equal(promptHooks.length, 1);
+      const inherited = await promptHooks[0].handler(
         { prompt: "Please recall relevant constraints for this task." },
         { sessionId: "fixed-s1", sessionKey: "agent:main:session:fixed-s1", agentId: "main" }
-      )));
-      const inherited = outputs.find((result) => result?.prependContext?.includes("<inherited-rules>"));
+      );
       assert.ok(inherited);
       assert.match(inherited.prependContext, /Dynamic reflection rule 1|Stable rules inherited from memory-lancedb-pro reflections\./);
     });
 
     it("keeps dynamic reflection top-k independent from relevant-memories top-k and excludes reflection rows from auto-recall", async () => {
-      const hooks = harness.eventHandlers.get("before_agent_start") || [];
-      assert.equal(hooks.length, 2);
+      const beforeAgentStartHooks = harness.eventHandlers.get("before_agent_start") || [];
+      const beforePromptHooks = harness.eventHandlers.get("before_prompt_build") || [];
+      assert.equal(beforeAgentStartHooks.length, 1);
+      assert.equal(beforePromptHooks.length, 1);
 
-      const outputs = await Promise.all(hooks.map((hook) => hook.handler(
+      const relevant = await beforeAgentStartHooks[0].handler(
         { prompt: "Need a concise plan and recall prior decisions for this deploy?" },
         { sessionId: "s-dyn", sessionKey: "agent:main:session:s-dyn", agentId: "main" }
-      )));
-
-      const relevant = outputs.find((result) => result?.prependContext?.includes("<relevant-memories>"));
-      const inherited = outputs.find((result) => result?.prependContext?.includes("<inherited-rules>"));
+      );
+      const inherited = await beforePromptHooks[0].handler(
+        { prompt: "Need a concise plan and recall prior decisions for this deploy?" },
+        { sessionId: "s-dyn", sessionKey: "agent:main:session:s-dyn", agentId: "main" }
+      );
       assert.ok(relevant);
       assert.ok(inherited);
 
@@ -1343,6 +2248,203 @@ describe("memory reflection", () => {
       assert.match(relevant.prependContext, /User prefers concise incident updates\./);
       assert.match(relevant.prependContext, /Decide to verify services after config edits\./);
       assert.match(inherited.prependContext, /Dynamic reflection rule 1/);
+    });
+
+    it("lets ordinary follow-up prompts receive inherited-rules via before_prompt_build", async () => {
+      const beforePromptHooks = harness.eventHandlers.get("before_prompt_build") || [];
+      assert.equal(beforePromptHooks.length, 1);
+
+      const followUp = await beforePromptHooks[0].handler(
+        { prompt: "继续按这个方案改，并给我步骤" },
+        { sessionId: "s-follow-up", sessionKey: "agent:main:session:s-follow-up", agentId: "main" }
+      );
+
+      assert.ok(followUp);
+      assert.match(followUp.prependContext, /<inherited-rules>/);
+      assert.match(followUp.prependContext, /Dynamic reflection rule 1/);
+    });
+
+    it("uses the shared skip gate to suppress both auto-recall and reflection recall on control prompts", async () => {
+      const beforeAgentStartHooks = harness.eventHandlers.get("before_agent_start") || [];
+      const beforePromptHooks = harness.eventHandlers.get("before_prompt_build") || [];
+      assert.equal(beforeAgentStartHooks.length, 1);
+      assert.equal(beforePromptHooks.length, 1);
+
+      const controlPrompts = [
+        "/new",
+        "/reset",
+        "A new session was started via /new or /reset. Keep this in mind.",
+        "Execute your Session Startup sequence now before continuing.",
+        "Control wrapper line\n/note self-improvement (before reset): preserve incident timeline.",
+      ];
+
+      for (const prompt of controlPrompts) {
+        const relevant = await beforeAgentStartHooks[0].handler(
+          { prompt },
+          { sessionId: `auto-${prompt.length}`, sessionKey: `agent:main:session:auto-${prompt.length}`, agentId: "main" }
+        );
+        const inherited = await beforePromptHooks[0].handler(
+          { prompt },
+          { sessionId: `reflect-${prompt.length}`, sessionKey: `agent:main:session:reflect-${prompt.length}`, agentId: "main" }
+        );
+
+        assert.equal(relevant, undefined, `expected auto-recall to skip control prompt: ${prompt}`);
+        assert.equal(inherited, undefined, `expected reflection recall to skip control prompt: ${prompt}`);
+      }
+    });
+  });
+
+  describe("generic auto-recall selection mode compatibility", () => {
+    let workspaceDir;
+    let originalRetrieve;
+    const now = Date.UTC(2026, 2, 8, 12, 0, 0);
+    const day = 24 * 60 * 60 * 1000;
+
+    beforeEach(() => {
+      workspaceDir = mkdtempSync(path.join(tmpdir(), "generic-auto-recall-selection-mode-test-"));
+      originalRetrieve = MemoryRetriever.prototype.retrieve;
+    });
+
+    afterEach(() => {
+      MemoryRetriever.prototype.retrieve = originalRetrieve;
+      rmSync(workspaceDir, { recursive: true, force: true });
+    });
+
+    function buildGenericRecallRows() {
+      return [
+        {
+          entry: {
+            id: "dup-1",
+            text: "Restart API service after config updates.",
+            category: "fact",
+            scope: "global",
+            timestamp: now - 1 * day,
+            vector: [],
+            importance: 0.8,
+            metadata: "{}",
+          },
+          score: 0.99,
+          sources: {},
+        },
+        {
+          entry: {
+            id: "dup-2",
+            text: "restart api service after config updates.",
+            category: "fact",
+            scope: "global",
+            timestamp: now - 2 * day,
+            vector: [],
+            importance: 0.8,
+            metadata: "{}",
+          },
+          score: 0.97,
+          sources: {},
+        },
+        {
+          entry: {
+            id: "alt-1",
+            text: "Run DNS and mount health checks after restart.",
+            category: "decision",
+            scope: "global",
+            timestamp: now - 1 * day,
+            vector: [],
+            importance: 0.8,
+            metadata: "{}",
+          },
+          score: 0.65,
+          sources: {},
+        },
+      ];
+    }
+
+    it("mmr mode bypasses set-wise selector and uses direct truncation", async () => {
+      MemoryRetriever.prototype.retrieve = async () => buildGenericRecallRows();
+
+      const harness = createPluginApiHarness({
+        resolveRoot: workspaceDir,
+        pluginConfig: {
+          embedding: { apiKey: "test-api-key" },
+          autoCapture: false,
+          autoRecall: true,
+          autoRecallTopK: 2,
+          autoRecallSelectionMode: "mmr",
+          autoRecallMinLength: 1,
+          selfImprovement: { enabled: false, beforeResetNote: false, ensureLearningFiles: false },
+        },
+      });
+      memoryLanceDBProPlugin.register(harness.api);
+
+      const hooks = harness.eventHandlers.get("before_agent_start") || [];
+      assert.equal(hooks.length, 1);
+      const output = await hooks[0].handler(
+        { prompt: "Need rollout memories now." },
+        { sessionId: "mmr-mode", sessionKey: "agent:main:session:mmr-mode", agentId: "main" }
+      );
+      assert.ok(output);
+      assert.match(output.prependContext, /<relevant-memories>/);
+      assert.match(output.prependContext, /Restart API service after config updates\./);
+      assert.match(output.prependContext, /restart api service after config updates\./);
+      assert.doesNotMatch(output.prependContext, /Run DNS and mount health checks after restart\./);
+    });
+
+    it("legacy alias follows the same direct-truncation path as mmr", async () => {
+      MemoryRetriever.prototype.retrieve = async () => buildGenericRecallRows();
+
+      const harness = createPluginApiHarness({
+        resolveRoot: workspaceDir,
+        pluginConfig: {
+          embedding: { apiKey: "test-api-key" },
+          autoCapture: false,
+          autoRecall: true,
+          autoRecallTopK: 2,
+          autoRecallSelectionMode: "legacy",
+          autoRecallMinLength: 1,
+          selfImprovement: { enabled: false, beforeResetNote: false, ensureLearningFiles: false },
+        },
+      });
+      memoryLanceDBProPlugin.register(harness.api);
+
+      const hooks = harness.eventHandlers.get("before_agent_start") || [];
+      assert.equal(hooks.length, 1);
+      const output = await hooks[0].handler(
+        { prompt: "Need rollout memories now." },
+        { sessionId: "legacy-alias-mode", sessionKey: "agent:main:session:legacy-alias-mode", agentId: "main" }
+      );
+      assert.ok(output);
+      assert.match(output.prependContext, /<relevant-memories>/);
+      assert.match(output.prependContext, /Restart API service after config updates\./);
+      assert.match(output.prependContext, /restart api service after config updates\./);
+      assert.doesNotMatch(output.prependContext, /Run DNS and mount health checks after restart\./);
+    });
+
+    it("setwise-v2 mode uses set-wise selector for final top-k", async () => {
+      MemoryRetriever.prototype.retrieve = async () => buildGenericRecallRows();
+
+      const harness = createPluginApiHarness({
+        resolveRoot: workspaceDir,
+        pluginConfig: {
+          embedding: { apiKey: "test-api-key" },
+          autoCapture: false,
+          autoRecall: true,
+          autoRecallTopK: 2,
+          autoRecallSelectionMode: "setwise-v2",
+          autoRecallMinLength: 1,
+          selfImprovement: { enabled: false, beforeResetNote: false, ensureLearningFiles: false },
+        },
+      });
+      memoryLanceDBProPlugin.register(harness.api);
+
+      const hooks = harness.eventHandlers.get("before_agent_start") || [];
+      assert.equal(hooks.length, 1);
+      const output = await hooks[0].handler(
+        { prompt: "Need rollout memories now." },
+        { sessionId: "setwise-mode", sessionKey: "agent:main:session:setwise-mode", agentId: "main" }
+      );
+      assert.ok(output);
+      assert.match(output.prependContext, /<relevant-memories>/);
+      assert.match(output.prependContext, /Restart API service after config updates\./);
+      assert.match(output.prependContext, /Run DNS and mount health checks after restart\./);
+      assert.doesNotMatch(output.prependContext, /restart api service after config updates\./);
     });
   });
 });
