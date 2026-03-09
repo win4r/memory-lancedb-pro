@@ -1639,6 +1639,16 @@ const memoryLanceDBProPlugin = {
     );
 
     // ========================================================================
+    // Expose MemoryService for memory-lancedb-context
+    // ========================================================================
+    (globalThis as any).__OPENCLAW_MEMORY_SERVICE__ = {
+      store,
+      embedder,
+      retriever,
+      scopeManager,
+    };
+
+    // ========================================================================
     // Lifecycle Hooks
     // ========================================================================
 
