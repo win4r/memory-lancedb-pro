@@ -28,7 +28,7 @@ export async function runEmbeddedPiAgent() {
           "- memory-reflection",
           "",
           "## Invariants",
-          "- Keep inherited-rules in before_agent_start only.",
+          "- Keep inherited-rules in before_prompt_build only.",
           "",
           "## Derived",
           "- Fresh derived line from this run.",

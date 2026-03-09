@@ -2088,82 +2088,90 @@ const memoryLanceDBProPlugin = {
         }
       }, { priority: 15 });
 
-      api.on("before_agent_start", async (event, ctx) => {
-        const sessionKey = typeof ctx.sessionKey === "string" ? ctx.sessionKey : "";
-        if (isInternalReflectionSessionKey(sessionKey)) return;
-        if (reflectionInjectMode !== "inheritance-only" && reflectionInjectMode !== "inheritance+derived") return;
-        try {
-          pruneReflectionSessionState();
-          const agentId = typeof ctx.agentId === "string" && ctx.agentId.trim() ? ctx.agentId.trim() : "main";
-          const scopes = scopeManager.getAccessibleScopes(agentId);
-          if (reflectionRecallMode === "fixed") {
-            const slices = await loadAgentReflectionSlices(agentId, scopes);
-            if (slices.invariants.length === 0) return;
-            const body = slices.invariants.slice(0, 6).map((line, i) => `${i + 1}. ${line}`).join("\n");
-            return {
-              prependContext: [
-                "<inherited-rules>",
-                "Stable rules inherited from memory-lancedb-pro reflections. Treat as long-term behavioral constraints unless user overrides.",
-                body,
-                "</inherited-rules>",
-              ].join("\n"),
-            };
-          }
-
-          const sessionId = ctx?.sessionId || "default";
-          const topK = Math.max(1, reflectionRecallTopK);
-          const listLimit = Math.min(800, Math.max(topK * 40, 240));
-          const result = await orchestrateDynamicRecall({
-            channelName: "reflection-recall",
-            prompt: event.prompt,
-            minPromptLength: reflectionRecallMinPromptLength,
-            minRepeated: reflectionRecallMinRepeated,
-            topK,
-            sessionId,
-            state: reflectionDynamicRecallState,
-            outputTag: "inherited-rules",
-            headerLines: [
-              "Dynamic rules selected by Reflection-Recall. Treat as long-term behavioral constraints unless user overrides.",
-            ],
-            logger: api.logger,
-            loadCandidates: async () => {
-              const entries = await store.list(scopes, "reflection", listLimit, 0);
-              return rankDynamicReflectionRecallFromEntries(entries, {
-                agentId,
-                includeKinds: reflectionRecallIncludeKinds,
-                topK,
-                maxAgeMs: daysToMs(reflectionRecallMaxAgeDays),
-                maxEntriesPerKey: reflectionRecallMaxEntriesPerKey,
-                minScore: reflectionRecallMinScore,
-              });
-            },
-            formatLine: (row, index) =>
-              `${index + 1}. ${sanitizeForContext(row.text)} (${(row.score * 100).toFixed(0)}%)`,
-          });
-          if (!result) return;
-          return { prependContext: result.prependContext };
-        } catch (err) {
-          api.logger.warn(`memory-reflection: reflection-recall injection failed: ${String(err)}`);
+      const buildReflectionRecallPrependContext = async (
+        event: { prompt?: string } | undefined,
+        ctx: { sessionId?: string; sessionKey?: string; agentId?: string },
+      ): Promise<string | undefined> => {
+        const agentId = typeof ctx.agentId === "string" && ctx.agentId.trim() ? ctx.agentId.trim() : "main";
+        const scopes = scopeManager.getAccessibleScopes(agentId);
+        if (reflectionRecallMode === "fixed") {
+          const slices = await loadAgentReflectionSlices(agentId, scopes);
+          if (slices.invariants.length === 0) return undefined;
+          const body = slices.invariants.slice(0, 6).map((line, i) => `${i + 1}. ${line}`).join("\n");
+          return [
+            "<inherited-rules>",
+            "Stable rules inherited from memory-lancedb-pro reflections. Treat as long-term behavioral constraints unless user overrides.",
+            body,
+            "</inherited-rules>",
+          ].join("\n");
         }
-      }, { priority: 12 });
 
-      api.on("before_prompt_build", async (_event, ctx) => {
+        const sessionId = ctx?.sessionId || ctx?.sessionKey || "default";
+        const topK = Math.max(1, reflectionRecallTopK);
+        const listLimit = Math.min(800, Math.max(topK * 40, 240));
+        const result = await orchestrateDynamicRecall({
+          channelName: "reflection-recall",
+          prompt: event?.prompt,
+          minPromptLength: reflectionRecallMinPromptLength,
+          minRepeated: reflectionRecallMinRepeated,
+          topK,
+          sessionId,
+          state: reflectionDynamicRecallState,
+          outputTag: "inherited-rules",
+          headerLines: [
+            "Dynamic rules selected by Reflection-Recall. Treat as long-term behavioral constraints unless user overrides.",
+          ],
+          logger: api.logger,
+          loadCandidates: async () => {
+            const entries = await store.list(scopes, "reflection", listLimit, 0);
+            return rankDynamicReflectionRecallFromEntries(entries, {
+              agentId,
+              includeKinds: reflectionRecallIncludeKinds,
+              topK,
+              maxAgeMs: daysToMs(reflectionRecallMaxAgeDays),
+              maxEntriesPerKey: reflectionRecallMaxEntriesPerKey,
+              minScore: reflectionRecallMinScore,
+            });
+          },
+          formatLine: (row, index) =>
+            `${index + 1}. ${sanitizeForContext(row.text)} (${(row.score * 100).toFixed(0)}%)`,
+        });
+        return result?.prependContext;
+      };
+
+      api.on("before_prompt_build", async (event, ctx) => {
         const sessionKey = typeof ctx.sessionKey === "string" ? ctx.sessionKey : "";
         if (isInternalReflectionSessionKey(sessionKey)) return;
         pruneReflectionSessionState();
 
-        if (!sessionKey) return;
-        const pending = getPendingReflectionErrorSignalsForPrompt(sessionKey, reflectionErrorReminderMaxEntries);
-        if (pending.length === 0) return;
-        return {
-          prependContext: [
-            "<error-detected>",
-            "A tool error was detected. Consider logging this to `.learnings/ERRORS.md` if it is non-trivial or likely to recur.",
-            "Recent error signals:",
-            ...pending.map((e, i) => `${i + 1}. [${e.toolName}] ${e.summary}`),
-            "</error-detected>",
-          ].join("\n"),
-        };
+        const contextBlocks: string[] = [];
+
+        if (reflectionInjectMode === "inheritance-only" || reflectionInjectMode === "inheritance+derived") {
+          try {
+            const inheritedRules = await buildReflectionRecallPrependContext(event, ctx);
+            if (inheritedRules) {
+              contextBlocks.push(inheritedRules);
+            }
+          } catch (err) {
+            api.logger.warn(`memory-reflection: reflection-recall injection failed: ${String(err)}`);
+          }
+        }
+
+        if (sessionKey) {
+          const pending = getPendingReflectionErrorSignalsForPrompt(sessionKey, reflectionErrorReminderMaxEntries);
+          if (pending.length > 0) {
+            contextBlocks.push([
+              "<error-detected>",
+              "A tool error was detected. Consider logging this to `.learnings/ERRORS.md` if it is non-trivial or likely to recur.",
+              "Recent error signals:",
+              ...pending.map((e, i) => `${i + 1}. [${e.toolName}] ${e.summary}`),
+              "</error-detected>",
+            ].join("\n"));
+          }
+        }
+
+        if (contextBlocks.length === 0) return;
+        return { prependContext: contextBlocks.join("\n\n") };
       }, { priority: 15 });
 
       api.on("session_end", (_event, ctx) => {
@@ -2508,7 +2516,7 @@ const memoryLanceDBProPlugin = {
           api.logger.warn(`memory-reflection: before_reset fallback failed: ${String(err)}`);
         }
       }, { priority: 12 });
-      api.logger.info("memory-reflection: integrated hooks registered (command:new, command:reset, after_tool_call, before_agent_start, before_prompt_build)");
+      api.logger.info("memory-reflection: integrated hooks registered (command:new, command:reset, after_tool_call, before_prompt_build[inherited-rules,error-detected])");
     }
 
     if (config.sessionStrategy === "systemSessionMemory") {

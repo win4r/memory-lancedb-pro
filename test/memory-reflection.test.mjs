@@ -42,6 +42,7 @@ const {
   clearDynamicRecallSessionState,
   orchestrateDynamicRecall,
 } = jiti("../src/recall-engine.ts");
+const { shouldSkipRetrieval } = jiti("../src/adaptive-retrieval.ts");
 const {
   REFLECTION_INVARIANT_DECAY_MIDPOINT_DAYS,
   REFLECTION_INVARIANT_DECAY_K,
@@ -181,6 +182,28 @@ describe("memory reflection", () => {
       assert.match(conversation, /assistant: Acknowledged\. I will keep responses concise and factual\./);
       assert.doesNotMatch(conversation, /old reset snapshot/);
       assert.doesNotMatch(conversation, /^user:\s*\/new/m);
+    });
+  });
+
+  describe("adaptive retrieval control prompt skip gate", () => {
+    it("skips session-start boilerplate containing /new or /reset", () => {
+      const prompt = "A new session was started via /new or /reset. Keep this in mind.";
+      assert.equal(shouldSkipRetrieval(prompt), true);
+    });
+
+    it("skips startup boilerplate containing session startup sequence text", () => {
+      const prompt = "Execute your Session Startup sequence now before continuing.";
+      assert.equal(shouldSkipRetrieval(prompt), true);
+    });
+
+    it("skips /note handoff/control prompts", () => {
+      const prompt = "Control wrapper line\n/note self-improvement (before reset): preserve incident timeline.";
+      assert.equal(shouldSkipRetrieval(prompt), true);
+    });
+
+    it("does not skip a normal user task prompt", () => {
+      const prompt = "Please draft a rollback checklist for mosdns and rclone incidents.";
+      assert.equal(shouldSkipRetrieval(prompt), false);
     });
   });
 
@@ -1626,10 +1649,10 @@ describe("memory reflection", () => {
       rmSync(workspaceDir, { recursive: true, force: true });
     });
 
-    it("keeps inherited-rules in before_agent_start and builds note with fresh open-loops + historical derived-focus", async () => {
-      const beforeAgentStartHooks = harness.eventHandlers.get("before_agent_start") || [];
-      assert.equal(beforeAgentStartHooks.length, 1);
-      const inheritedResult = await beforeAgentStartHooks[0].handler({}, {
+    it("injects inherited-rules in before_prompt_build and builds note with fresh open-loops + historical derived-focus", async () => {
+      const beforePromptHooks = harness.eventHandlers.get("before_prompt_build") || [];
+      assert.equal(beforePromptHooks.length, 1);
+      const inheritedResult = await beforePromptHooks[0].handler({}, {
         sessionKey: "agent:main:session:s1",
         agentId: "main",
       });
@@ -1668,7 +1691,7 @@ describe("memory reflection", () => {
       assert.doesNotMatch(messages[0], /Historical stale follow-up should be filtered\./);
     });
 
-    it("keeps error-detected in before_prompt_build without derived-focus", async () => {
+    it("keeps error-detected in before_prompt_build and coexists with inherited-rules", async () => {
       const afterToolHooks = harness.eventHandlers.get("after_tool_call") || [];
       const beforePromptHooks = harness.eventHandlers.get("before_prompt_build") || [];
       assert.equal(afterToolHooks.length, 1);
@@ -1683,6 +1706,7 @@ describe("memory reflection", () => {
         sessionKey: "agent:main:session:s1",
         agentId: "main",
       });
+      assert.match(promptResult.prependContext, /<inherited-rules>/);
       assert.match(promptResult.prependContext, /<error-detected>/);
       assert.match(promptResult.prependContext, /\[shell\]/);
       assert.doesNotMatch(promptResult.prependContext, /<derived-focus>/);
@@ -1829,27 +1853,32 @@ describe("memory reflection", () => {
       });
       memoryLanceDBProPlugin.register(fixedHarness.api);
 
-      const hooks = fixedHarness.eventHandlers.get("before_agent_start") || [];
-      const outputs = await Promise.all(hooks.map((hook) => hook.handler(
+      const autoRecallHooks = fixedHarness.eventHandlers.get("before_agent_start") || [];
+      assert.equal(autoRecallHooks.length, 1);
+      const promptHooks = fixedHarness.eventHandlers.get("before_prompt_build") || [];
+      assert.equal(promptHooks.length, 1);
+      const inherited = await promptHooks[0].handler(
         { prompt: "Please recall relevant constraints for this task." },
         { sessionId: "fixed-s1", sessionKey: "agent:main:session:fixed-s1", agentId: "main" }
-      )));
-      const inherited = outputs.find((result) => result?.prependContext?.includes("<inherited-rules>"));
+      );
       assert.ok(inherited);
       assert.match(inherited.prependContext, /Dynamic reflection rule 1|Stable rules inherited from memory-lancedb-pro reflections\./);
     });
 
     it("keeps dynamic reflection top-k independent from relevant-memories top-k and excludes reflection rows from auto-recall", async () => {
-      const hooks = harness.eventHandlers.get("before_agent_start") || [];
-      assert.equal(hooks.length, 2);
+      const beforeAgentStartHooks = harness.eventHandlers.get("before_agent_start") || [];
+      const beforePromptHooks = harness.eventHandlers.get("before_prompt_build") || [];
+      assert.equal(beforeAgentStartHooks.length, 1);
+      assert.equal(beforePromptHooks.length, 1);
 
-      const outputs = await Promise.all(hooks.map((hook) => hook.handler(
+      const relevant = await beforeAgentStartHooks[0].handler(
         { prompt: "Need a concise plan and recall prior decisions for this deploy?" },
         { sessionId: "s-dyn", sessionKey: "agent:main:session:s-dyn", agentId: "main" }
-      )));
-
-      const relevant = outputs.find((result) => result?.prependContext?.includes("<relevant-memories>"));
-      const inherited = outputs.find((result) => result?.prependContext?.includes("<inherited-rules>"));
+      );
+      const inherited = await beforePromptHooks[0].handler(
+        { prompt: "Need a concise plan and recall prior decisions for this deploy?" },
+        { sessionId: "s-dyn", sessionKey: "agent:main:session:s-dyn", agentId: "main" }
+      );
       assert.ok(relevant);
       assert.ok(inherited);
 
@@ -1862,6 +1891,49 @@ describe("memory reflection", () => {
       assert.match(relevant.prependContext, /User prefers concise incident updates\./);
       assert.match(relevant.prependContext, /Decide to verify services after config edits\./);
       assert.match(inherited.prependContext, /Dynamic reflection rule 1/);
+    });
+
+    it("lets ordinary follow-up prompts receive inherited-rules via before_prompt_build", async () => {
+      const beforePromptHooks = harness.eventHandlers.get("before_prompt_build") || [];
+      assert.equal(beforePromptHooks.length, 1);
+
+      const followUp = await beforePromptHooks[0].handler(
+        { prompt: "继续按这个方案改，并给我步骤" },
+        { sessionId: "s-follow-up", sessionKey: "agent:main:session:s-follow-up", agentId: "main" }
+      );
+
+      assert.ok(followUp);
+      assert.match(followUp.prependContext, /<inherited-rules>/);
+      assert.match(followUp.prependContext, /Dynamic reflection rule 1/);
+    });
+
+    it("uses the shared skip gate to suppress both auto-recall and reflection recall on control prompts", async () => {
+      const beforeAgentStartHooks = harness.eventHandlers.get("before_agent_start") || [];
+      const beforePromptHooks = harness.eventHandlers.get("before_prompt_build") || [];
+      assert.equal(beforeAgentStartHooks.length, 1);
+      assert.equal(beforePromptHooks.length, 1);
+
+      const controlPrompts = [
+        "/new",
+        "/reset",
+        "A new session was started via /new or /reset. Keep this in mind.",
+        "Execute your Session Startup sequence now before continuing.",
+        "Control wrapper line\n/note self-improvement (before reset): preserve incident timeline.",
+      ];
+
+      for (const prompt of controlPrompts) {
+        const relevant = await beforeAgentStartHooks[0].handler(
+          { prompt },
+          { sessionId: `auto-${prompt.length}`, sessionKey: `agent:main:session:auto-${prompt.length}`, agentId: "main" }
+        );
+        const inherited = await beforePromptHooks[0].handler(
+          { prompt },
+          { sessionId: `reflect-${prompt.length}`, sessionKey: `agent:main:session:reflect-${prompt.length}`, agentId: "main" }
+        );
+
+        assert.equal(relevant, undefined, `expected auto-recall to skip control prompt: ${prompt}`);
+        assert.equal(inherited, undefined, `expected reflection recall to skip control prompt: ${prompt}`);
+      }
     });
   });
 });
