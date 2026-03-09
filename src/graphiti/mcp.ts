@@ -33,6 +33,36 @@ interface McpToolDescriptor {
   inputSchema?: unknown;
 }
 
+function parseSseJsonRpc(bodyText: string): JsonRpcResponse | null {
+  const lines = bodyText.split(/\r?\n/);
+  const dataChunks: string[] = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line.startsWith("data:")) continue;
+    const chunk = line.slice(5).trim();
+    if (!chunk || chunk === "[DONE]") continue;
+    dataChunks.push(chunk);
+  }
+
+  if (dataChunks.length === 0) {
+    return null;
+  }
+
+  for (const chunk of dataChunks) {
+    try {
+      const parsed = JSON.parse(chunk);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as JsonRpcResponse;
+      }
+    } catch {
+      // Keep scanning; some events may contain non-JSON payloads before the result event.
+    }
+  }
+
+  return null;
+}
+
 export class GraphitiMcpClient {
   private endpoint: string | null = null;
   private sessionId: string | null = null;
@@ -157,19 +187,27 @@ export class GraphitiMcpClient {
       : null;
 
     const initializedPayload = this.buildRequest("notifications/initialized", {});
-    const initializedResponse = await this.postJsonRpc(
-      endpoint,
-      initializedPayload,
-      this.config.timeoutMs,
-      {
-        sessionId: this.sessionId || undefined,
-        allowEmptyBody: true,
-      },
-    );
+    try {
+      const initializedResponse = await this.postJsonRpc(
+        endpoint,
+        initializedPayload,
+        this.config.timeoutMs,
+        {
+          sessionId: this.sessionId || undefined,
+          allowEmptyBody: true,
+        },
+      );
 
-    if (initializedResponse.body.error) {
-      throw new Error(
-        initializedResponse.body.error.message || "notifications/initialized failed",
+      if (initializedResponse.body.error) {
+        this.logger?.debug?.(
+          `memory-lancedb-pro: graphiti notifications/initialized ignored: ${
+            initializedResponse.body.error.message || "unknown_error"
+          }`,
+        );
+      }
+    } catch (err) {
+      this.logger?.debug?.(
+        `memory-lancedb-pro: graphiti notifications/initialized unsupported: ${String(err)}`,
       );
     }
   }
@@ -203,7 +241,7 @@ export class GraphitiMcpClient {
 
     const headers: Record<string, string> = {
       "content-type": "application/json",
-      accept: "application/json",
+      accept: "application/json, text/event-stream",
       ...this.resolveAuthHeaders(),
     };
     if (options.sessionId) {
@@ -234,6 +272,13 @@ export class GraphitiMcpClient {
       try {
         parsed = JSON.parse(bodyText);
       } catch (err) {
+        const parsedSse = parseSseJsonRpc(bodyText);
+        if (parsedSse) {
+          return {
+            body: parsedSse,
+            headers: response.headers,
+          };
+        }
         throw new Error(
           `Invalid JSON-RPC response body: ${String(err)}`,
         );
