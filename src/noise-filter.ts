@@ -37,7 +37,7 @@ const META_QUESTION_PATTERNS = [
   // Chinese meta-question patterns (user-side)
   /你(还)?记得吗/,
   /你(还)?记不记得/,
-  /你知道.*吗/,
+  /你知道我(说过|提过|告诉|提到).*吗/,
   /我(有没有|是不是)(说过|提过|告诉|提到)/,
   /我之前(说过|提过|提到|告诉)/,
   /我(跟你)?说过.*吗/,
@@ -96,19 +96,30 @@ const DEFAULT_OPTIONS: Required<NoiseFilterOptions> = {
  * Check if a memory text is noise that should be filtered out.
  * Returns true if the text is noise.
  */
-export function isNoise(text: string, options: NoiseFilterOptions = {}): boolean {
+export function isNoise(
+  text: string,
+  options: NoiseFilterOptions = {},
+): boolean {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const trimmed = text.trim();
 
   if (trimmed.length < 5) return true;
 
-  if (opts.filterDenials && DENIAL_PATTERNS.some(p => p.test(trimmed))) return true;
-  if (opts.filterMetaQuestions && META_QUESTION_PATTERNS.some(p => p.test(trimmed))) return true;
+  if (opts.filterDenials && DENIAL_PATTERNS.some((p) => p.test(trimmed)))
+    return true;
+  if (
+    opts.filterMetaQuestions &&
+    META_QUESTION_PATTERNS.some((p) => p.test(trimmed))
+  )
+    return true;
   if (opts.filterBoilerplate) {
-    if (BOILERPLATE_PATTERNS.some(p => p.test(trimmed))) return true;
+    if (BOILERPLATE_PATTERNS.some((p) => p.test(trimmed))) return true;
     // Short boilerplate: only filter when text is short enough to be pure filler
-    if (trimmed.length <= BOILERPLATE_MAX_LENGTH &&
-        SHORT_BOILERPLATE_PATTERNS.some(p => p.test(trimmed))) return true;
+    if (
+      trimmed.length <= BOILERPLATE_MAX_LENGTH &&
+      SHORT_BOILERPLATE_PATTERNS.some((p) => p.test(trimmed))
+    )
+      return true;
   }
 
   return false;
@@ -120,8 +131,8 @@ export function isNoise(text: string, options: NoiseFilterOptions = {}): boolean
 export function filterNoise<T>(
   items: T[],
   getText: (item: T) => string,
-  options?: NoiseFilterOptions
+  options?: NoiseFilterOptions,
 ): T[] {
   const opts = { ...DEFAULT_OPTIONS, ...options };
-  return items.filter(item => !isNoise(getText(item), opts));
+  return items.filter((item) => !isNoise(getText(item), opts));
 }

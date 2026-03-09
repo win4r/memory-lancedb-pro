@@ -37,6 +37,8 @@ const SHOULD_BE_NOISE = [
   { text: "我之前提到过什么", category: "meta-question" },
   { text: "我是不是告诉过你", category: "meta-question" },
   { text: "我跟你说过这个吗", category: "meta-question" },
+  { text: "你知道我说过什么吗", category: "meta-question" },
+  { text: "你知道我提过这件事吗", category: "meta-question" },
 
   // Chinese boilerplate
   { text: "你好", category: "boilerplate" },
@@ -75,6 +77,8 @@ const SHOULD_NOT_BE_NOISE = [
   "你好厉害，这个方案解决了我的问题",  // starts with 你好 but has meaningful content after
   "好的方案是使用Redis做缓存层",        // starts with 好的 but has meaningful content
   "谢谢分享，我觉得这个思路很好，可以用在我们的EVRP项目里",
+  "你知道Redis的持久化策略吗",            // legitimate question, must NOT be filtered
+  "你知道怎么配置Nginx反向代理吗",         // legitimate question, must NOT be filtered
 ];
 
 // ============================================================================
