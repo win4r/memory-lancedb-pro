@@ -20,6 +20,8 @@ const SKIP_PATTERNS = [
   /^[\p{Emoji}\s]+$/u,
   // Heartbeat/system (match anywhere, not just at start, to handle prefixed formats)
   /HEARTBEAT/i,
+  /^(no[_-]?reply|noreply)\s*[.!]?$/i,
+  /^(heartbeat(_ok|_fail|_err|_error)?|heartbeat\s*(ok|fail|error)|health[_ -]?check|system[_ -]?check|status[_ -]?check)\s*[.!]?$/i,
   /^\[System/i,
   // Single-word utility pings
   /^(ping|pong|test|debug)\s*[.!?]?$/i,
@@ -56,6 +58,10 @@ function normalizeQuery(query: string): string {
 
   // 3. Strip OpenClaw timestamp prefix [Mon 2026-03-02 04:21 GMT+8].
   s = s.trim().replace(/^\[[A-Za-z]{3}\s\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}\s[^\]]+\]\s*/, "");
+
+  // 4. Strip heartbeat/healthcheck wrappers.
+  s = s.trim().replace(/^\[(heartbeat|health[-_ ]?check|system[-_ ]?check)[^\]]*\]\s*/i, "");
+  s = s.trim().replace(/^(heartbeat|health[-_ ]?check|system[-_ ]?check)\s*[:\-]\s*/i, "");
 
   const result = s.trim();
   return result;
