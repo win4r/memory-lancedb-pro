@@ -143,22 +143,39 @@ Content: ${candidateContent}
 **Existing Similar Memories**:
 ${existingMemories}
 
-Please decide:
-- SKIP: Candidate memory duplicates existing memories, no need to save
-- CREATE: This is completely new information, should be created
-- MERGE: Candidate memory should be merged with an existing memory
+Please decide one of the following actions:
 
-IMPORTANT: "events" and "cases" categories are independent records — they do NOT support MERGE.
-For these categories, only use SKIP or CREATE.
+- **SKIP**: Candidate is a near-exact duplicate with no new information.
+- **CREATE**: Completely new information, no overlap with existing memories.
+- **SUPPORT**: Same claim confirmed again. The existing memory stays unchanged; we only record that it was re-observed.
+- **MERGE**: Candidate should be merged with an existing memory (legacy alias for REFINE — rewrites text).
+- **REFINE**: Candidate adds precision or detail to an existing memory (e.g. "likes tea" → "likes oolong tea").
+- **CONTEXTUALIZE**: Candidate adds situational/temporal context to an existing memory (e.g. "prefers tea at night"), but the original claim remains valid in its own context.
+- **CONTRADICT**: Candidate conflicts with an existing memory. Both should be kept; the conflict is logged but not auto-resolved.
+
+IMPORTANT:
+- "events" and "cases" categories are independent records — only use SKIP or CREATE for them.
+- Default to SUPPORT (not SKIP) when the same preference/fact is re-stated, so evidence accumulates.
+- Use CONTEXTUALIZE (not MERGE) when info adds time/place/condition constraints without invalidating the original.
+- Use CONTRADICT only when the candidate clearly negates the existing claim.
 
 Return JSON format:
 {
-  "decision": "skip|create|merge",
+  "decision": "skip|create|support|merge|refine|contextualize|contradict",
   "match_index": 1,
-  "reason": "Decision reason"
+  "reason": "Decision reason",
+  "context_label": "general"
 }
 
-If decision is "merge", set "match_index" to the number of the existing memory to merge with (1-based).`;
+Rules for context_label:
+- Required when decision is support, contextualize, or contradict.
+- Must be one of: general, morning, evening, night, weekday, weekend, work, leisure, travel, recent, historical.
+- Use "general" when no specific situational/temporal context applies.
+- For CONTEXTUALIZE decisions, the label should describe the NEW context being added (e.g. "evening" for "prefers tea at night").
+- For CONTRADICT decisions, the label should describe the context in which the contradiction applies.
+- For SUPPORT decisions, the label should match the context of the reconfirming evidence.
+
+If decision involves an existing memory, set "match_index" to the number of the existing memory (1-based).`;
 }
 
 export function buildMergePrompt(
@@ -169,10 +186,17 @@ export function buildMergePrompt(
   newOverview: string,
   newContent: string,
   category: string,
+  relationType?: string,
 ): string {
+  const relationGuidance = relationType === "contextualize"
+    ? `\n\nRelation type: CONTEXTUALIZE\nThe new information adds situational context (time/place/condition) to the existing memory. Preserve the original claim as-is and integrate the contextual nuance. Both the general claim and the specific context should coexist in the merged result.`
+    : relationType === "refine"
+      ? `\n\nRelation type: REFINE\nThe new information adds precision or detail to the existing claim. Update the claim to be more specific while preserving all accurate existing information.`
+      : "";
+
   return `Merge the following memory into a single coherent record with all three levels.
 
-**Category**: ${category}
+**Category**: ${category}${relationGuidance}
 
 **Existing Memory:**
 Abstract: ${existingAbstract}

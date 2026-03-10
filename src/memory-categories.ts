@@ -43,19 +43,42 @@ export type CandidateMemory = {
   content: string; // L2: full narrative
 };
 
-/** Dedup decision from LLM. */
-export type DedupDecision = "create" | "merge" | "skip";
+/** Dedup decision from LLM.
+ * V2 adds: support, refine, contextualize, contradict.
+ * - support: same content confirmed, only update support stats (no L0/L1/L2 rewrite)
+ * - refine: adds precision to existing claim (e.g. "likes tea" → "likes oolong tea")
+ * - contextualize: adds situational context to existing claim (e.g. "prefers tea at night")
+ * - contradict: conflicts with existing claim, both preserved in conflict state
+ * - merge: backward-compat alias for refine (rewrites L0/L1/L2)
+ */
+export type DedupDecision =
+  | "create"
+  | "merge"
+  | "support"
+  | "refine"
+  | "contextualize"
+  | "contradict"
+  | "skip";
 
 export type DedupResult = {
   decision: DedupDecision;
   reason: string;
   matchId?: string; // ID of existing memory to merge with
+  contextLabel?: string; // context label for support/contextualize/contradict
 };
 
 export type ExtractionStats = {
   created: number;
   merged: number;
   skipped: number;
+  /** V2: count of support decisions (confirmed existing without rewrite). */
+  supported?: number;
+  /** V2: count of refine decisions (improved existing claim). */
+  refined?: number;
+  /** V2: count of contextualize decisions (added situational context). */
+  contextualized?: number;
+  /** V2: count of contradict decisions (conflict preserved). */
+  contradicted?: number;
 };
 
 /** Validate and normalize a category string. */

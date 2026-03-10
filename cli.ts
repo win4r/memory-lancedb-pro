@@ -10,6 +10,14 @@ import type { MemoryScopeManager } from "./src/scopes.js";
 import type { MemoryMigrator } from "./src/migrate.js";
 import { createMemoryUpgrader } from "./src/memory-upgrader.js";
 import type { LlmClient } from "./src/llm-client.js";
+import {
+  parseSmartMetadata,
+  createSourceRecord,
+  buildInitialProvenance,
+  buildInitialDecision,
+  stringifySmartMetadata,
+  buildSmartMetadata,
+} from "./src/smart-metadata.js";
 
 // ============================================================================
 // Types
@@ -417,10 +425,10 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
             const categoryRaw = memory.category;
             const category: MemoryEntry["category"] =
               categoryRaw === "preference" ||
-              categoryRaw === "fact" ||
-              categoryRaw === "decision" ||
-              categoryRaw === "entity" ||
-              categoryRaw === "other"
+                categoryRaw === "fact" ||
+                categoryRaw === "decision" ||
+                categoryRaw === "entity" ||
+                categoryRaw === "other"
                 ? categoryRaw
                 : "other";
 
@@ -464,6 +472,31 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
 
             const vector = await context.embedder.embedPassage(text);
 
+            // Inject provenance if metadata lacks it (for import traceability)
+            let enrichedMetadata = metadata;
+            try {
+              const metaObj = metadata ? JSON.parse(metadata) : {};
+              if (!metaObj.provenance) {
+                const importSource = createSourceRecord({
+                  type: "import",
+                  excerpt: text.slice(0, 200),
+                });
+                const enriched = buildSmartMetadata(
+                  { text, category, importance, metadata },
+                  {
+                    schema_version: 2,
+                    provenance: buildInitialProvenance(importSource),
+                    decision: buildInitialDecision({
+                      actor: "system",
+                      reason: "Imported via CLI",
+                      sourceIds: [importSource.source_id],
+                    }),
+                  },
+                );
+                enrichedMetadata = stringifySmartMetadata(enriched);
+              }
+            } catch { /* keep original metadata if enrichment fails */ }
+
             if (id) {
               await context.store.importEntry({
                 id,
@@ -473,7 +506,7 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
                 scope: targetScope,
                 importance,
                 timestamp,
-                metadata,
+                metadata: enrichedMetadata,
               });
             } else {
               await context.store.store({
@@ -482,7 +515,7 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
                 importance,
                 category,
                 scope: targetScope,
-                metadata,
+                metadata: enrichedMetadata,
               });
             }
 
@@ -531,10 +564,10 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         let targetReal = context.store.dbPath;
         try {
           sourceReal = await fs.realpath(sourceDbPath);
-        } catch {}
+        } catch { }
         try {
           targetReal = await fs.realpath(context.store.dbPath);
-        } catch {}
+        } catch { }
 
         if (!force && sourceReal === targetReal) {
           console.error("Refusing to re-embed in-place: source-db equals target dbPath. Use a new dbPath or pass --force.");
@@ -608,6 +641,30 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
               timestamp: (row.timestamp != null) ? Number(row.timestamp) : Date.now(),
               metadata: typeof row.metadata === "string" ? row.metadata : "{}",
             };
+
+            // Inject provenance if missing (for reembed traceability)
+            try {
+              const metaObj = entry.metadata ? JSON.parse(entry.metadata) : {};
+              if (!metaObj.provenance) {
+                const reembedSource = createSourceRecord({
+                  type: "import",
+                  excerpt: entry.text.slice(0, 200),
+                });
+                const enriched = buildSmartMetadata(
+                  entry,
+                  {
+                    schema_version: 2,
+                    provenance: buildInitialProvenance(reembedSource),
+                    decision: buildInitialDecision({
+                      actor: "system",
+                      reason: "Re-embedded via CLI reembed",
+                      sourceIds: [reembedSource.source_id],
+                    }),
+                  },
+                );
+                entry.metadata = stringifySmartMetadata(enriched);
+              }
+            } catch { /* keep original metadata */ }
 
             await context.store.importEntry(entry);
             imported++;
@@ -778,6 +835,267 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         }
       } catch (error) {
         console.error("Verification failed:", error);
+        process.exit(1);
+      }
+    });
+
+  // ========================================================================
+  // V2 Bionic Memory Introspection Commands
+  // ========================================================================
+
+  // Inspect: human-readable claim summary
+  memory
+    .command("inspect <id>")
+    .description("Show structured claim summary for a memory")
+    .option("--scope <scope>", "Scope filter")
+    .option("--json", "Output raw V2 metadata as JSON")
+    .action(async (id: string, options: any) => {
+      try {
+        const scopeFilter = options.scope ? [options.scope] : undefined;
+        const entry = await context.store.getById(id, scopeFilter);
+        if (!entry) {
+          console.log(`Memory ${id} not found.`);
+          process.exit(1);
+        }
+
+        const meta = parseSmartMetadata(entry.metadata, entry);
+
+        if (options.json) {
+          console.log(formatJson({
+            schema_version: meta.schema_version,
+            claim: meta.claim,
+            provenance: meta.provenance,
+            decision: meta.decision,
+            support: meta.support,
+            relations: meta.relations,
+          }));
+          return;
+        }
+
+        const claim = meta.claim;
+        const support = meta.support;
+        const relations = meta.relations;
+
+        console.log(`📋 Claim: ${meta.l0_abstract}`);
+        if (claim) {
+          console.log(`   Kind: ${claim.kind} | Stability: ${claim.stability}${claim.polarity ? ` | Polarity: ${claim.polarity}` : ""}`);
+          if (claim.valid_time) console.log(`   Valid time: ${claim.valid_time}`);
+          if (claim.contexts?.length) console.log(`   Contexts: ${claim.contexts.join(", ")}`);
+          if (claim.subject) console.log(`   Subject: ${claim.subject}`);
+          if (claim.attribute) console.log(`   Attribute: ${claim.attribute}`);
+        }
+        console.log(`   Confidence: ${meta.confidence.toFixed(2)} | Tier: ${meta.tier} | Category: ${meta.memory_category}`);
+        console.log(`   Schema version: ${meta.schema_version ?? 1}`);
+
+        if (support) {
+          if (support.slices.length > 0) {
+            console.log(`   Support (${support.total_observations} observations, global: ${support.global_strength.toFixed(2)}):`);
+            for (const s of support.slices) {
+              console.log(`     ${s.context}: ${s.confirmations} conf, ${s.contradictions} contra (strength: ${s.strength.toFixed(2)})`);
+            }
+          } else {
+            console.log(`   Support: ${support.total_observations} observations (global: ${support.global_strength.toFixed(2)})`);
+          }
+        }
+
+        if (meta.provenance) {
+          console.log(`   Evidence: ${meta.provenance.evidence_count} source(s)`);
+          console.log(`   First observed: ${new Date(meta.provenance.first_observed_at).toISOString().split("T")[0]}`);
+          console.log(`   Last observed: ${new Date(meta.provenance.last_observed_at).toISOString().split("T")[0]}`);
+        }
+
+        if (relations?.length) {
+          console.log(`   Relations:`);
+          for (const r of relations) {
+            console.log(`     → ${r.relation} ${r.target_id.slice(0, 8)}${r.strength != null ? ` (strength: ${r.strength.toFixed(2)})` : ""}${r.reason ? ` — ${r.reason}` : ""}`);
+          }
+        }
+      } catch (error) {
+        console.error("Inspect failed:", error);
+        process.exit(1);
+      }
+    });
+
+  // Evidence: list source records
+  memory
+    .command("evidence <id>")
+    .description("Show evidence sources for a memory")
+    .option("--scope <scope>", "Scope filter")
+    .option("--json", "Output as JSON")
+    .action(async (id: string, options: any) => {
+      try {
+        const scopeFilter = options.scope ? [options.scope] : undefined;
+        const entry = await context.store.getById(id, scopeFilter);
+        if (!entry) {
+          console.log(`Memory ${id} not found.`);
+          process.exit(1);
+        }
+
+        const meta = parseSmartMetadata(entry.metadata, entry);
+        const provenance = meta.provenance;
+
+        if (!provenance || provenance.sources.length === 0) {
+          console.log(`📜 No provenance data for memory ${id}.`);
+          if (meta.source_session) {
+            console.log(`   Legacy source_session: ${meta.source_session}`);
+          }
+          return;
+        }
+
+        if (options.json) {
+          console.log(formatJson(provenance));
+          return;
+        }
+
+        console.log(`📜 Evidence for memory ${id.slice(0, 8)} (${provenance.evidence_count} source(s)):`);
+        const sorted = [...provenance.sources].sort((a, b) => a.timestamp - b.timestamp);
+        for (let i = 0; i < sorted.length; i++) {
+          const s = sorted[i];
+          const date = new Date(s.timestamp).toISOString().replace("T", " ").slice(0, 19);
+          const session = s.session_key ? ` ${s.session_key}` : "";
+          const excerpt = s.excerpt ? ` — "${s.excerpt.slice(0, 60)}${s.excerpt.length > 60 ? "..." : ""}"` : "";
+          const conf = s.confidence_hint != null ? ` (conf: ${s.confidence_hint.toFixed(1)})` : "";
+          console.log(`   ${i + 1}. [${s.type}] ${date}${session}${excerpt}${conf}`);
+        }
+      } catch (error) {
+        console.error("Evidence failed:", error);
+        process.exit(1);
+      }
+    });
+
+  // Trace: decision history
+  memory
+    .command("trace <id>")
+    .description("Show decision trail for a memory")
+    .option("--scope <scope>", "Scope filter")
+    .option("--json", "Output as JSON")
+    .action(async (id: string, options: any) => {
+      try {
+        const scopeFilter = options.scope ? [options.scope] : undefined;
+        const entry = await context.store.getById(id, scopeFilter);
+        if (!entry) {
+          console.log(`Memory ${id} not found.`);
+          process.exit(1);
+        }
+
+        const meta = parseSmartMetadata(entry.metadata, entry);
+        const decision = meta.decision;
+
+        if (!decision || decision.history.length === 0) {
+          console.log(`🔍 No decision trail for memory ${id.slice(0, 8)}.`);
+          return;
+        }
+
+        if (options.json) {
+          console.log(formatJson(decision));
+          return;
+        }
+
+        console.log(`🔍 Decision Trail for memory ${id.slice(0, 8)} (${decision.history.length} entries):`);
+        if (decision.current_reason) {
+          console.log(`   Current: ${decision.current_reason}`);
+        }
+        for (let i = 0; i < decision.history.length; i++) {
+          const d = decision.history[i];
+          const date = new Date(d.timestamp).toISOString().replace("T", " ").slice(0, 19);
+          const model = d.model ? ` (${d.model})` : "";
+          const reason = d.reason ? ` — ${d.reason}` : "";
+          console.log(`   ${i + 1}. [${d.action}] ${date} by ${d.actor}${model}${reason}`);
+        }
+      } catch (error) {
+        console.error("Trace failed:", error);
+        process.exit(1);
+      }
+    });
+
+  // Explain: generate human-readable explanation
+  memory
+    .command("explain <id>")
+    .description("Generate a human-readable explanation of a memory")
+    .option("--scope <scope>", "Scope filter")
+    .action(async (id: string, options: any) => {
+      try {
+        const scopeFilter = options.scope ? [options.scope] : undefined;
+        const entry = await context.store.getById(id, scopeFilter);
+        if (!entry) {
+          console.log(`Memory ${id} not found.`);
+          process.exit(1);
+        }
+
+        const meta = parseSmartMetadata(entry.metadata, entry);
+        const parts: string[] = [];
+
+        // Source summary
+        if (meta.provenance && meta.provenance.sources.length > 0) {
+          const byType = new Map<string, number>();
+          for (const s of meta.provenance.sources) {
+            byType.set(s.type, (byType.get(s.type) ?? 0) + 1);
+          }
+          const typeDesc: string[] = [];
+          for (const [type, count] of byType.entries()) {
+            const label = type === "smart-extraction" ? "LLM extraction"
+              : type === "regex-fallback" ? "regex capture"
+                : type === "manual" ? "manual input"
+                  : type === "reflection" ? "reflection summary"
+                    : type === "feedback" ? "user feedback"
+                      : type;
+            typeDesc.push(`${count} from ${label}`);
+          }
+          parts.push(`This memory has ${meta.provenance.evidence_count} source(s): ${typeDesc.join(", ")}.`);
+        } else if (meta.source_session) {
+          parts.push(`This memory was captured in session ${meta.source_session} (legacy format, no detailed provenance).`);
+        } else {
+          parts.push(`This memory has no provenance data available.`);
+        }
+
+        // Claim description
+        if (meta.claim) {
+          const stability = meta.claim.stability === "situational"
+            ? "a situational"
+            : meta.claim.stability === "transient"
+              ? "a transient"
+              : "a stable";
+          parts.push(`It is ${stability} ${meta.claim.kind} claim, currently in ${meta.tier} tier.`);
+        } else {
+          parts.push(`It is in ${meta.tier} tier with confidence ${meta.confidence.toFixed(2)}.`);
+        }
+
+        // Support
+        if (meta.support && meta.support.total_observations > 0) {
+          const slices = meta.support.slices;
+          if (slices.length > 1) {
+            const descriptions = slices.map(s => {
+              const total = s.confirmations + s.contradictions;
+              if (s.contradictions === 0) return `${s.context}: fully confirmed (${s.confirmations}x)`;
+              if (s.confirmations === 0) return `${s.context}: fully contradicted (${s.contradictions}x)`;
+              return `${s.context}: ${s.confirmations} confirmation(s) vs ${s.contradictions} contradiction(s)`;
+            });
+            parts.push(`Support across contexts: ${descriptions.join("; ")}.`);
+          } else if (slices.length === 1) {
+            const s = slices[0];
+            parts.push(`Support: ${s.confirmations} confirmation(s), ${s.contradictions} contradiction(s) (strength: ${s.strength.toFixed(2)}).`);
+          } else {
+            parts.push(`Support: ${meta.support.total_observations} observation(s) (strength: ${meta.support.global_strength.toFixed(2)}).`);
+          }
+        }
+
+        // Relations
+        if (meta.relations?.length) {
+          for (const r of meta.relations) {
+            parts.push(`It ${r.relation} memory ${r.target_id.slice(0, 8)}${r.reason ? ` (${r.reason})` : ""}.`);
+          }
+        }
+
+        // Decision trail summary
+        if (meta.decision && meta.decision.history.length > 0) {
+          const lastAction = meta.decision.history[meta.decision.history.length - 1];
+          const date = new Date(lastAction.timestamp).toISOString().split("T")[0];
+          parts.push(`Last action: ${lastAction.action} on ${date}${lastAction.reason ? ` (${lastAction.reason})` : ""}.`);
+        }
+
+        console.log(`💡 ${parts.join("\n   ")}`);
+      } catch (error) {
+        console.error("Explain failed:", error);
         process.exit(1);
       }
     });

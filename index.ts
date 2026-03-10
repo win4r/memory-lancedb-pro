@@ -50,6 +50,9 @@ import {
   parseSmartMetadata,
   stringifySmartMetadata,
   toLifecycleMemory,
+  createSourceRecord,
+  buildInitialProvenance,
+  buildInitialDecision,
 } from "./src/smart-metadata.js";
 
 // ============================================================================
@@ -1272,7 +1275,7 @@ async function findPreviousSessionFile(
       );
       if (nonReset.length > 0) return join(sessionsDir, nonReset[0]);
     }
-  } catch {}
+  } catch { }
 }
 
 // ============================================================================
@@ -1403,7 +1406,7 @@ const memoryLanceDBProPlugin = {
     } catch (err) {
       api.logger.warn(
         `memory-lancedb-pro: storage path issue — ${String(err)}\n` +
-          `  The plugin will still attempt to start, but writes may fail.`,
+        `  The plugin will still attempt to start, but writes may fail.`,
       );
     }
 
@@ -1471,6 +1474,7 @@ const memoryLanceDBProPlugin = {
           extractMaxChars: config.extractMaxChars ?? 8000,
           defaultScope: config.scopes?.default ?? "global",
           log: (msg: string) => api.logger.info(msg),
+          agentId: undefined, // resolved per-call in agent_end hook
         });
 
         api.logger.info("memory-lancedb-pro: smart extraction enabled (LLM model: " + llmModel + ")");
@@ -1974,6 +1978,14 @@ const memoryLanceDBProPlugin = {
               continue;
             }
 
+            const regexSource = createSourceRecord({
+              type: "regex-fallback",
+              agentId,
+              sessionKey: (event as any).sessionKey || "unknown",
+              excerpt: text.slice(0, 200),
+              confidenceHint: 0.7,
+            });
+
             await store.store({
               text,
               vector,
@@ -1988,10 +2000,18 @@ const memoryLanceDBProPlugin = {
                     importance: 0.7,
                   },
                   {
+                    schema_version: 2,
                     l0_abstract: text,
                     l1_overview: `- ${text}`,
                     l2_content: text,
                     source_session: (event as any).sessionKey || "unknown",
+                    provenance: buildInitialProvenance(regexSource),
+                    decision: buildInitialDecision({
+                      actor: "system",
+                      reason: "Regex-triggered capture",
+                      sourceIds: [regexSource.source_id],
+                    }),
+                    support: { global_strength: 0.5, total_observations: 0, slices: [] },
                   },
                 ),
               ),
@@ -2458,7 +2478,7 @@ const memoryLanceDBProPlugin = {
             }
 
             const importance = mapped.category === "decision" ? 0.85 : 0.8;
-            const metadata = JSON.stringify(buildReflectionMappedMetadata({
+            const reflectionMeta = buildReflectionMappedMetadata({
               mappedItem: mapped,
               eventId: reflectionEventId,
               agentId: sourceAgentId,
@@ -2468,7 +2488,27 @@ const memoryLanceDBProPlugin = {
               usedFallback: reflectionGenerated.usedFallback,
               toolErrorSignals,
               sourceReflectionPath: relPath,
-            }));
+            });
+
+            // Inject V2 provenance into reflection metadata
+            const reflSource = createSourceRecord({
+              type: "reflection",
+              agentId: sourceAgentId,
+              sessionKey,
+              excerpt: mapped.text.slice(0, 200),
+              confidenceHint: importance,
+            });
+            const enrichedReflMeta = {
+              ...reflectionMeta,
+              schema_version: 2,
+              provenance: buildInitialProvenance(reflSource),
+              decision: buildInitialDecision({
+                actor: "system",
+                reason: `Reflection mapped item: ${mapped.heading}`,
+                sourceIds: [reflSource.source_id],
+              }),
+            };
+            const metadata = JSON.stringify(enrichedReflMeta);
 
             const storedEntry = await store.store({
               text: mapped.text,
@@ -2616,6 +2656,14 @@ const memoryLanceDBProPlugin = {
             sessionContent,
           ].join("\n");
 
+          const sessionSource = createSourceRecord({
+            type: "auto-capture",
+            agentId,
+            sessionKey,
+            excerpt: `Session summary for ${dateStr}`,
+            confidenceHint: 0.5,
+          });
+
           const vector = await embedder.embedPassage(memoryText);
           await store.store({
             text: memoryText,
@@ -2632,6 +2680,7 @@ const memoryLanceDBProPlugin = {
                   timestamp: Date.now(),
                 },
                 {
+                  schema_version: 2,
                   l0_abstract: `Session summary for ${dateStr}`,
                   l1_overview: `- Session summary saved for ${currentSessionId}`,
                   l2_content: memoryText,
@@ -2644,6 +2693,13 @@ const memoryLanceDBProPlugin = {
                   date: dateStr,
                   agentId,
                   scope: defaultScope,
+                  provenance: buildInitialProvenance(sessionSource),
+                  decision: buildInitialDecision({
+                    actor: "system",
+                    reason: "Session summary auto-captured on /new",
+                    sourceIds: [sessionSource.source_id],
+                  }),
+                  support: { global_strength: 0.5, total_observations: 0, slices: [] },
                 },
               ),
             ),
@@ -2707,7 +2763,7 @@ const memoryLanceDBProPlugin = {
         if (files.length > 7) {
           const { unlink } = await import("node:fs/promises");
           for (const old of files.slice(0, files.length - 7)) {
-            await unlink(join(backupDir, old)).catch(() => {});
+            await unlink(join(backupDir, old)).catch(() => { });
           }
         }
 
@@ -2765,10 +2821,10 @@ const memoryLanceDBProPlugin = {
 
             api.logger.info(
               `memory-lancedb-pro: initialized successfully ` +
-                `(embedding: ${embedTest.success ? "OK" : "FAIL"}, ` +
-                `retrieval: ${retrievalTest.success ? "OK" : "FAIL"}, ` +
-                `mode: ${retrievalTest.mode}, ` +
-                `FTS: ${retrievalTest.hasFtsSupport ? "enabled" : "disabled"})`,
+              `(embedding: ${embedTest.success ? "OK" : "FAIL"}, ` +
+              `retrieval: ${retrievalTest.success ? "OK" : "FAIL"}, ` +
+              `mode: ${retrievalTest.mode}, ` +
+              `FTS: ${retrievalTest.hasFtsSupport ? "enabled" : "disabled"})`,
             );
 
             if (!embedTest.success) {
@@ -2874,7 +2930,7 @@ export function parsePluginConfig(value: unknown): PluginConfig {
       ? sessionStrategyRaw
       : legacySessionMemoryEnabled === true
         ? "systemSessionMemory"
-      : "none";
+        : "none";
   const reflectionMessageCount = parsePositiveInt(memoryReflectionRaw?.messageCount ?? sessionMemoryRaw?.messageCount) ?? DEFAULT_REFLECTION_MESSAGE_COUNT;
   const injectModeRaw = memoryReflectionRaw?.injectMode;
   const reflectionInjectMode: ReflectionInjectMode =
@@ -2982,26 +3038,26 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     sessionMemory:
       typeof cfg.sessionMemory === "object" && cfg.sessionMemory !== null
         ? {
-            enabled:
-              (cfg.sessionMemory as Record<string, unknown>).enabled === true,
-            messageCount:
-              typeof (cfg.sessionMemory as Record<string, unknown>)
-                .messageCount === "number"
-                ? ((cfg.sessionMemory as Record<string, unknown>)
-                    .messageCount as number)
-                : undefined,
-          }
+          enabled:
+            (cfg.sessionMemory as Record<string, unknown>).enabled === true,
+          messageCount:
+            typeof (cfg.sessionMemory as Record<string, unknown>)
+              .messageCount === "number"
+              ? ((cfg.sessionMemory as Record<string, unknown>)
+                .messageCount as number)
+              : undefined,
+        }
         : undefined,
     mdMirror:
       typeof cfg.mdMirror === "object" && cfg.mdMirror !== null
         ? {
-            enabled:
-              (cfg.mdMirror as Record<string, unknown>).enabled === true,
-            dir:
-              typeof (cfg.mdMirror as Record<string, unknown>).dir === "string"
-                ? ((cfg.mdMirror as Record<string, unknown>).dir as string)
-                : undefined,
-          }
+          enabled:
+            (cfg.mdMirror as Record<string, unknown>).enabled === true,
+          dir:
+            typeof (cfg.mdMirror as Record<string, unknown>).dir === "string"
+              ? ((cfg.mdMirror as Record<string, unknown>).dir as string)
+              : undefined,
+        }
         : undefined,
   };
 }

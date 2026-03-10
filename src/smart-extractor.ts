@@ -2,8 +2,8 @@
  * Smart Memory Extractor — LLM-powered extraction pipeline
  * Replaces regex-triggered capture with intelligent 6-category extraction.
  *
- * Pipeline: conversation → LLM extract → candidates → dedup → persist
- *
+ * V2: Pipeline now supports relation-based decisions:
+ * conversation → LLM extract → candidates → dedup (create|support|refine|contextualize|contradict|skip) → persist
  */
 
 import type { MemoryStore, MemorySearchResult } from "./store.js";
@@ -26,7 +26,23 @@ import {
   normalizeCategory,
 } from "./memory-categories.js";
 import { isNoise } from "./noise-filter.js";
-import { buildSmartMetadata, parseSmartMetadata, stringifySmartMetadata } from "./smart-metadata.js";
+import {
+  buildSmartMetadata,
+  parseSmartMetadata,
+  stringifySmartMetadata,
+  createSourceRecord,
+  appendDecisionEntry,
+  updateSupportStats,
+  buildInitialProvenance,
+  buildInitialDecision,
+  inferClaimKind,
+  type SourceRecord,
+  type ProvenanceInfo,
+  type DecisionInfo,
+  type SupportInfo,
+  type ClaimInfo,
+  type RelationEntry,
+} from "./smart-metadata.js";
 
 // ============================================================================
 // Constants
@@ -35,7 +51,17 @@ import { buildSmartMetadata, parseSmartMetadata, stringifySmartMetadata } from "
 const SIMILARITY_THRESHOLD = 0.7;
 const MAX_SIMILAR_FOR_PROMPT = 3;
 const MAX_MEMORIES_PER_EXTRACTION = 5;
-const VALID_DECISIONS = new Set<string>(["create", "merge", "skip"]);
+const VALID_DECISIONS = new Set<string>([
+  "create", "merge", "support", "refine", "contextualize", "contradict", "skip",
+]);
+
+// Categories that support V2 relation-based decisions (everything except append-only).
+const RELATION_SUPPORTED_CATEGORIES = new Set<MemoryCategory>([
+  "preferences",
+  "entities",
+  "patterns",
+  "profile",
+]);
 
 // ============================================================================
 // Smart Extractor
@@ -52,6 +78,8 @@ export interface SmartExtractorConfig {
   defaultScope?: string;
   /** Logger function. */
   log?: (msg: string) => void;
+  /** Agent ID for provenance tracking. */
+  agentId?: string;
 }
 
 export interface ExtractPersistOptions {
@@ -86,7 +114,15 @@ export class SmartExtractor {
     sessionKey: string = "unknown",
     options: ExtractPersistOptions = {},
   ): Promise<ExtractionStats> {
-    const stats: ExtractionStats = { created: 0, merged: 0, skipped: 0 };
+    const stats: ExtractionStats = {
+      created: 0,
+      merged: 0,
+      skipped: 0,
+      supported: 0,
+      refined: 0,
+      contextualized: 0,
+      contradicted: 0,
+    };
     const targetScope = options.scope ?? this.config.defaultScope ?? "global";
     const scopeFilter =
       options.scopeFilter && options.scopeFilter.length > 0
@@ -182,7 +218,7 @@ export class SmartExtractor {
   // --------------------------------------------------------------------------
 
   /**
-   * Process a single candidate memory: dedup → merge/create → store
+   * Process a single candidate memory: dedup → relation decision → store/update
    */
   private async processCandidate(
     candidate: CandidateMemory,
@@ -191,6 +227,15 @@ export class SmartExtractor {
     targetScope: string,
     scopeFilter: string[],
   ): Promise<void> {
+    // Create a source record for this extraction event
+    const source = createSourceRecord({
+      type: "smart-extraction",
+      agentId: this.config.agentId,
+      sessionKey,
+      excerpt: candidate.abstract.slice(0, 200),
+      confidenceHint: 0.7,
+    });
+
     // Profile always merges (skip dedup)
     if (ALWAYS_MERGE_CATEGORIES.has(candidate.category)) {
       await this.handleProfileMerge(
@@ -198,6 +243,7 @@ export class SmartExtractor {
         sessionKey,
         targetScope,
         scopeFilter,
+        source,
       );
       stats.merged++;
       return;
@@ -208,7 +254,7 @@ export class SmartExtractor {
     const vector = await this.embedder.embed(embeddingText);
     if (!vector || vector.length === 0) {
       this.log("memory-pro: smart-extractor: embedding failed, storing as-is");
-      await this.storeCandidate(candidate, vector || [], sessionKey, targetScope);
+      await this.storeCandidate(candidate, vector || [], sessionKey, targetScope, source);
       stats.created++;
       return;
     }
@@ -218,25 +264,101 @@ export class SmartExtractor {
 
     switch (dedupResult.decision) {
       case "create":
-        await this.storeCandidate(candidate, vector, sessionKey, targetScope);
+        await this.storeCandidate(candidate, vector, sessionKey, targetScope, source);
         stats.created++;
         break;
 
+      case "support":
+        if (dedupResult.matchId) {
+          await this.handleSupport(dedupResult.matchId, scopeFilter, source, dedupResult.reason, dedupResult.contextLabel);
+          stats.supported = (stats.supported ?? 0) + 1;
+        } else {
+          // No match ID → treat as create
+          await this.storeCandidate(candidate, vector, sessionKey, targetScope, source);
+          stats.created++;
+        }
+        break;
+
+      case "refine":
       case "merge":
         if (
           dedupResult.matchId &&
-          MERGE_SUPPORTED_CATEGORIES.has(candidate.category)
+          RELATION_SUPPORTED_CATEGORIES.has(candidate.category)
         ) {
+          const relationType = dedupResult.decision === "refine" ? "refine" : undefined;
           await this.handleMerge(
             candidate,
             dedupResult.matchId,
             scopeFilter,
             targetScope,
+            source,
+            relationType,
+            dedupResult.contextLabel,
+          );
+          if (dedupResult.decision === "refine") {
+            stats.refined = (stats.refined ?? 0) + 1;
+          } else {
+            stats.merged++;
+          }
+        } else if (
+          dedupResult.matchId &&
+          MERGE_SUPPORTED_CATEGORIES.has(candidate.category)
+        ) {
+          // Backward compat: categories that support merge but not in the new set
+          await this.handleMerge(
+            candidate,
+            dedupResult.matchId,
+            scopeFilter,
+            targetScope,
+            source,
           );
           stats.merged++;
         } else {
           // Category doesn't support merge → create instead
-          await this.storeCandidate(candidate, vector, sessionKey, targetScope);
+          await this.storeCandidate(candidate, vector, sessionKey, targetScope, source);
+          stats.created++;
+        }
+        break;
+
+      case "contextualize":
+        if (
+          dedupResult.matchId &&
+          RELATION_SUPPORTED_CATEGORIES.has(candidate.category)
+        ) {
+          await this.handleContextualize(
+            candidate,
+            dedupResult.matchId,
+            vector,
+            sessionKey,
+            targetScope,
+            scopeFilter,
+            source,
+            dedupResult.reason,
+            dedupResult.contextLabel,
+          );
+          stats.contextualized = (stats.contextualized ?? 0) + 1;
+        } else {
+          await this.storeCandidate(candidate, vector, sessionKey, targetScope, source);
+          stats.created++;
+        }
+        break;
+
+      case "contradict":
+        if (dedupResult.matchId) {
+          await this.handleContradict(
+            candidate,
+            dedupResult.matchId,
+            vector,
+            sessionKey,
+            targetScope,
+            scopeFilter,
+            source,
+            dedupResult.reason,
+            dedupResult.contextLabel,
+          );
+          stats.contradicted = (stats.contradicted ?? 0) + 1;
+        } else {
+          await this.storeCandidate(candidate, vector, sessionKey, targetScope, source);
           stats.created++;
         }
         break;
@@ -308,6 +430,7 @@ export class SmartExtractor {
         decision: string;
         reason: string;
         match_index?: number;
+        context_label?: string;
       }>(prompt);
 
       if (!data) {
@@ -333,10 +456,12 @@ export class SmartExtractor {
           ? topSimilar[idx - 1]
           : topSimilar[0];
 
+      const needsMatch = decision !== "create" && decision !== "skip";
       return {
         decision,
         reason: data.reason ?? "",
-        matchId: decision === "merge" ? matchEntry?.entry.id : undefined,
+        matchId: needsMatch ? matchEntry?.entry.id : undefined,
+        contextLabel: typeof data.context_label === "string" ? data.context_label : undefined,
       };
     } catch (err) {
       this.log(
@@ -347,7 +472,273 @@ export class SmartExtractor {
   }
 
   // --------------------------------------------------------------------------
-  // Merge Logic
+  // V2: Support — confirm existing without rewriting
+  // --------------------------------------------------------------------------
+
+  /**
+   * Handle a SUPPORT decision: increment support stats, append evidence, log decision.
+   * Does NOT rewrite L0/L1/L2 text.
+   */
+  private async handleSupport(
+    matchId: string,
+    scopeFilter: string[],
+    source: SourceRecord,
+    reason?: string,
+    contextLabel?: string,
+  ): Promise<void> {
+    try {
+      const existing = await this.store.getById(matchId, scopeFilter);
+      if (!existing) {
+        this.log(`memory-pro: smart-extractor: support target ${matchId.slice(0, 8)} not found, skipping`);
+        return;
+      }
+
+      const meta = parseSmartMetadata(existing.metadata, existing);
+
+      // Update support stats
+      const newSupport = updateSupportStats(meta.support, "support", contextLabel);
+
+      // Append provenance
+      const newProvenance: ProvenanceInfo = {
+        sources: [...(meta.provenance?.sources ?? []), source],
+        evidence_count: (meta.provenance?.evidence_count ?? 0) + 1,
+        first_observed_at: meta.provenance?.first_observed_at ?? source.timestamp,
+        last_observed_at: source.timestamp,
+        last_confirmed_at: source.timestamp,
+      };
+
+      // Append decision
+      const newDecision = appendDecisionEntry(meta.decision, {
+        action: "supported",
+        actor: "llm",
+        timestamp: source.timestamp,
+        reason: reason ?? "Same claim re-observed",
+        source_ids: [source.source_id],
+      });
+
+      // Bump confidence slightly on re-confirmation (max 0.95)
+      const newConfidence = Math.min(0.95, meta.confidence + 0.02);
+
+      const updatedMeta = stringifySmartMetadata({
+        ...meta,
+        schema_version: 2,
+        support: newSupport,
+        provenance: newProvenance,
+        decision: newDecision,
+        confidence: newConfidence,
+      });
+
+      await this.store.update(
+        matchId,
+        { metadata: updatedMeta },
+        scopeFilter,
+      );
+
+      this.log(
+        `memory-pro: smart-extractor: supported ${matchId.slice(0, 8)} (observations: ${newSupport.total_observations}, global: ${newSupport.global_strength.toFixed(2)})`,
+      );
+    } catch (err) {
+      this.log(`memory-pro: smart-extractor: support failed: ${String(err)}`);
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // V2: Contextualize — create new claim with relation to existing
+  // --------------------------------------------------------------------------
+
+  /**
+   * Handle CONTEXTUALIZE: create a new memory and link it to the existing one.
+   * The existing memory is unchanged; the new memory carries a `contextualizes` relation.
+   */
+  private async handleContextualize(
+    candidate: CandidateMemory,
+    matchId: string,
+    vector: number[],
+    sessionKey: string,
+    targetScope: string,
+    scopeFilter: string[],
+    source: SourceRecord,
+    reason?: string,
+    contextLabel?: string,
+  ): Promise<void> {
+    // Create the new memory with a relation pointing to the existing one
+    const relations: RelationEntry[] = [{
+      relation: "contextualizes",
+      target_id: matchId,
+      strength: 0.8,
+      reason: reason ?? "Adds situational context",
+    }];
+
+    const claim: ClaimInfo = {
+      kind: inferClaimKind(candidate.category),
+      value_summary: candidate.abstract,
+      stability: "situational",
+      contexts: contextLabel ? [contextLabel] : [],
+    };
+
+    const metadata = stringifySmartMetadata(
+      buildSmartMetadata(
+        {
+          text: candidate.abstract,
+          category: this.mapToStoreCategory(candidate.category),
+        },
+        {
+          schema_version: 2,
+          l0_abstract: candidate.abstract,
+          l1_overview: candidate.overview,
+          l2_content: candidate.content,
+          memory_category: candidate.category,
+          tier: "working",
+          access_count: 0,
+          confidence: 0.7,
+          source_session: sessionKey,
+          claim,
+          provenance: buildInitialProvenance(source),
+          decision: buildInitialDecision({
+            actor: "llm",
+            reason: reason ?? "Contextualizes existing claim",
+            sourceIds: [source.source_id],
+          }),
+          support: { global_strength: 0.5, total_observations: 0, slices: [] },
+          relations,
+        },
+      ),
+    );
+
+    await this.store.store({
+      text: candidate.abstract,
+      vector,
+      category: this.mapToStoreCategory(candidate.category),
+      scope: targetScope,
+      importance: this.getDefaultImportance(candidate.category),
+      metadata,
+    });
+
+    // Also update the target memory to note the relation (if accessible)
+    try {
+      const existing = await this.store.getById(matchId, scopeFilter);
+      if (existing) {
+        const existingMeta = parseSmartMetadata(existing.metadata, existing);
+        const existingRelations: RelationEntry[] = existingMeta.relations ?? [];
+        // We don't know the new memory's ID yet (store generates it), so we skip back-linking for now
+        // This will be enhanced when we have the ID from store.store()
+        void existingRelations;
+      }
+    } catch {
+      // Non-critical — skip back-linking
+    }
+
+    this.log(
+      `memory-pro: smart-extractor: contextualized [${candidate.category}] → ${matchId.slice(0, 8)}: ${candidate.abstract.slice(0, 60)}`,
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // V2: Contradict — create new claim and mark conflict
+  // --------------------------------------------------------------------------
+
+  /**
+   * Handle CONTRADICT: create a new memory and mark both as in conflict.
+   * Neither is auto-superseded; both coexist until resolved.
+   */
+  private async handleContradict(
+    candidate: CandidateMemory,
+    matchId: string,
+    vector: number[],
+    sessionKey: string,
+    targetScope: string,
+    scopeFilter: string[],
+    source: SourceRecord,
+    reason?: string,
+    contextLabel?: string,
+  ): Promise<void> {
+    // Create the contradicting memory
+    const relations: RelationEntry[] = [{
+      relation: "contradicts",
+      target_id: matchId,
+      strength: 0.8,
+      reason: reason ?? "Conflicts with existing claim",
+    }];
+
+    const claim: ClaimInfo = {
+      kind: inferClaimKind(candidate.category),
+      value_summary: candidate.abstract,
+      stability: "stable",
+      contexts: contextLabel ? [contextLabel] : undefined,
+    };
+
+    const metadata = stringifySmartMetadata(
+      buildSmartMetadata(
+        {
+          text: candidate.abstract,
+          category: this.mapToStoreCategory(candidate.category),
+        },
+        {
+          schema_version: 2,
+          l0_abstract: candidate.abstract,
+          l1_overview: candidate.overview,
+          l2_content: candidate.content,
+          memory_category: candidate.category,
+          tier: "working",
+          access_count: 0,
+          confidence: 0.6, // Lower initial confidence for contradicting claims
+          source_session: sessionKey,
+          claim,
+          provenance: buildInitialProvenance(source),
+          decision: buildInitialDecision({
+            actor: "llm",
+            reason: reason ?? "Contradicts existing claim",
+            sourceIds: [source.source_id],
+          }),
+          support: { global_strength: 0.5, total_observations: 0, slices: [] },
+          relations,
+        },
+      ),
+    );
+
+    await this.store.store({
+      text: candidate.abstract,
+      vector,
+      category: this.mapToStoreCategory(candidate.category),
+      scope: targetScope,
+      importance: this.getDefaultImportance(candidate.category),
+      metadata,
+    });
+
+    // Update the existing memory's support stats and decision trail
+    try {
+      const existing = await this.store.getById(matchId, scopeFilter);
+      if (existing) {
+        const existingMeta = parseSmartMetadata(existing.metadata, existing);
+        const newSupport = updateSupportStats(existingMeta.support, "contradict", contextLabel);
+        const newDecision = appendDecisionEntry(existingMeta.decision, {
+          action: "contradicted",
+          actor: "llm",
+          timestamp: source.timestamp,
+          reason: reason ?? "New contradicting evidence observed",
+          source_ids: [source.source_id],
+        });
+
+        const updatedMeta = stringifySmartMetadata({
+          ...existingMeta,
+          schema_version: 2,
+          support: newSupport,
+          decision: newDecision,
+        });
+
+        await this.store.update(matchId, { metadata: updatedMeta }, scopeFilter);
+      }
+    } catch {
+      // Non-critical
+    }
+
+    this.log(
+      `memory-pro: smart-extractor: contradicted [${candidate.category}] → ${matchId.slice(0, 8)}: ${candidate.abstract.slice(0, 60)}`,
+    );
+  }
+
+  // --------------------------------------------------------------------------
+  // Merge Logic (existing + V2 enhancements)
   // --------------------------------------------------------------------------
 
   /**
@@ -358,6 +749,7 @@ export class SmartExtractor {
     sessionKey: string,
     targetScope: string,
     scopeFilter: string[],
+    source: SourceRecord,
   ): Promise<void> {
     // Find existing profile memory by category
     const embeddingText = `${candidate.abstract} ${candidate.content}`;
@@ -385,33 +777,39 @@ export class SmartExtractor {
         profileMatch.entry.id,
         scopeFilter,
         targetScope,
+        source,
       );
     } else {
       // No existing profile — create new
-      await this.storeCandidate(candidate, vector || [], sessionKey, targetScope);
+      await this.storeCandidate(candidate, vector || [], sessionKey, targetScope, source);
     }
   }
 
   /**
    * Merge a candidate into an existing memory using LLM.
+   * V2: preserves decision trail and provenance.
    */
   private async handleMerge(
     candidate: CandidateMemory,
     matchId: string,
     scopeFilter: string[],
     targetScope: string,
+    source: SourceRecord,
+    relationType?: string,
+    contextLabel?: string,
   ): Promise<void> {
     let existingAbstract = "";
     let existingOverview = "";
     let existingContent = "";
+    let existingMeta: ReturnType<typeof parseSmartMetadata> | undefined;
 
     try {
       const existing = await this.store.getById(matchId, scopeFilter);
       if (existing) {
-        const meta = parseSmartMetadata(existing.metadata, existing);
-        existingAbstract = meta.l0_abstract || existing.text;
-        existingOverview = meta.l1_overview || "";
-        existingContent = meta.l2_content || existing.text;
+        existingMeta = parseSmartMetadata(existing.metadata, existing);
+        existingAbstract = existingMeta.l0_abstract || existing.text;
+        existingOverview = existingMeta.l1_overview || "";
+        existingContent = existingMeta.l2_content || existing.text;
       }
     } catch {
       // Fallback: store as new
@@ -426,6 +824,7 @@ export class SmartExtractor {
         vector || [],
         "merge-fallback",
         targetScope,
+        source,
       );
       return;
     }
@@ -439,6 +838,7 @@ export class SmartExtractor {
       candidate.overview,
       candidate.content,
       candidate.category,
+      relationType,
     );
 
     const merged = await this.llm.completeJson<{
@@ -456,16 +856,38 @@ export class SmartExtractor {
     const mergedText = `${merged.abstract} ${merged.content}`;
     const newVector = await this.embedder.embed(mergedText);
 
-    // Update existing memory via store.update()
+    // Build V2 metadata preserving provenance and decision trail
     const existing = await this.store.getById(matchId, scopeFilter);
+    const baseMeta = existingMeta ?? parseSmartMetadata(existing?.metadata, existing ?? { text: merged.abstract });
+
+    // Determine the decision action
+    const decisionAction = relationType === "refine" ? "merged" : "merged";
+
     const metadata = stringifySmartMetadata(
       buildSmartMetadata(existing ?? { text: merged.abstract }, {
+        schema_version: 2,
         l0_abstract: merged.abstract,
         l1_overview: merged.overview,
         l2_content: merged.content,
         memory_category: candidate.category,
         tier: "working",
-        confidence: 0.8,
+        confidence: Math.min(0.95, (baseMeta.confidence ?? 0.7) + 0.05),
+        provenance: {
+          sources: [...(baseMeta.provenance?.sources ?? []), source],
+          evidence_count: (baseMeta.provenance?.evidence_count ?? 0) + 1,
+          first_observed_at: baseMeta.provenance?.first_observed_at ?? source.timestamp,
+          last_observed_at: source.timestamp,
+        },
+        decision: appendDecisionEntry(baseMeta.decision, {
+          action: decisionAction,
+          actor: "llm",
+          timestamp: source.timestamp,
+          reason: relationType ? `${relationType}: integrated new info` : "Merged with new information",
+          source_ids: [source.source_id],
+        }),
+        support: updateSupportStats(baseMeta.support, "support", contextLabel),
+        claim: baseMeta.claim,
+        relations: baseMeta.relations,
       }),
     );
 
@@ -489,16 +911,24 @@ export class SmartExtractor {
   // --------------------------------------------------------------------------
 
   /**
-   * Store a candidate memory as a new entry with L0/L1/L2 metadata.
+   * Store a candidate memory as a new entry with V2 metadata.
    */
   private async storeCandidate(
     candidate: CandidateMemory,
     vector: number[],
     sessionKey: string,
     targetScope: string,
+    source: SourceRecord,
   ): Promise<void> {
     // Map 6-category to existing store categories for backward compatibility
     const storeCategory = this.mapToStoreCategory(candidate.category);
+
+    // Build V2 claim
+    const claim: ClaimInfo = {
+      kind: inferClaimKind(candidate.category),
+      value_summary: candidate.abstract,
+      stability: "stable",
+    };
 
     const metadata = stringifySmartMetadata(
       buildSmartMetadata(
@@ -507,6 +937,7 @@ export class SmartExtractor {
           category: this.mapToStoreCategory(candidate.category),
         },
         {
+          schema_version: 2,
           l0_abstract: candidate.abstract,
           l1_overview: candidate.overview,
           l2_content: candidate.content,
@@ -515,6 +946,14 @@ export class SmartExtractor {
           access_count: 0,
           confidence: 0.7,
           source_session: sessionKey,
+          claim,
+          provenance: buildInitialProvenance(source),
+          decision: buildInitialDecision({
+            actor: "llm",
+            reason: "Extracted from conversation",
+            sourceIds: [source.source_id],
+          }),
+          support: { global_strength: 0.5, total_observations: 0, slices: [] },
         },
       ),
     );

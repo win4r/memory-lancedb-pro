@@ -8,6 +8,11 @@ import {
 import { parseReflectionMetadata } from "./reflection-metadata.js";
 import { buildReflectionEventPayload, createReflectionEventId } from "./reflection-event-store.js";
 import {
+  createSourceRecord,
+  buildInitialProvenance,
+  buildInitialDecision,
+} from "./smart-metadata.js";
+import {
   buildReflectionItemPayloads,
   getReflectionItemDecayDefaults,
   REFLECTION_DERIVED_DECAY_K,
@@ -201,13 +206,32 @@ export async function storeReflectionToLanceDB(params: StoreReflectionToLanceDBP
       }
     }
 
+    // Inject V2 provenance into reflection payload metadata
+    const reflSource = createSourceRecord({
+      type: "reflection",
+      agentId: params.agentId,
+      sessionKey: params.sessionKey,
+      excerpt: payload.text.slice(0, 200),
+      confidenceHint: resolveReflectionImportance(payload.kind),
+    });
+    const enrichedMetadata = {
+      ...payload.metadata,
+      schema_version: 2,
+      provenance: buildInitialProvenance(reflSource),
+      decision: buildInitialDecision({
+        actor: "system",
+        reason: `Reflection ${payload.kind}`,
+        sourceIds: [reflSource.source_id],
+      }),
+    };
+
     await params.store({
       text: payload.text,
       vector,
       category: "reflection",
       scope: params.scope,
       importance: resolveReflectionImportance(payload.kind),
-      metadata: JSON.stringify(payload.metadata),
+      metadata: JSON.stringify(enrichedMetadata),
     });
     storedKinds.push(payload.kind);
   }
