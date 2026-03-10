@@ -13,6 +13,7 @@ import {
   lstatSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { buildSmartMetadata, parseSmartMetadata, stringifySmartMetadata } from "./smart-metadata.js";
 
 // ============================================================================
 // Types
@@ -37,6 +38,10 @@ export interface MemorySearchResult {
 export interface StoreConfig {
   dbPath: string;
   vectorDim: number;
+}
+
+export interface MetadataPatch {
+  [key: string]: unknown;
 }
 
 // ============================================================================
@@ -75,6 +80,26 @@ function escapeSqlLiteral(value: string): string {
   return value.replace(/'/g, "''");
 }
 
+function normalizeSearchText(value: string): string {
+  return value.toLowerCase().trim();
+}
+
+function scoreLexicalHit(query: string, candidates: Array<{ text: string; weight: number }>): number {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) return 0;
+
+  let score = 0;
+  for (const candidate of candidates) {
+    const normalized = normalizeSearchText(candidate.text);
+    if (!normalized) continue;
+    if (normalized.includes(normalizedQuery)) {
+      score = Math.max(score, Math.min(0.95, 0.72 + normalizedQuery.length * 0.02) * candidate.weight);
+    }
+  }
+
+  return score;
+}
+
 // ============================================================================
 // Storage Path Validation
 // ============================================================================
@@ -96,8 +121,8 @@ export function validateStoragePath(dbPath: string): string {
       } catch (err: any) {
         throw new Error(
           `dbPath "${dbPath}" is a symlink whose target does not exist.\n` +
-          `  Fix: Create the target directory, or update the symlink to point to a valid path.\n` +
-          `  Details: ${err.code || ""} ${err.message}`,
+            `  Fix: Create the target directory, or update the symlink to point to a valid path.\n` +
+            `  Details: ${err.code || ""} ${err.message}`,
         );
       }
     }
@@ -122,9 +147,9 @@ export function validateStoragePath(dbPath: string): string {
     } catch (err: any) {
       throw new Error(
         `Failed to create dbPath directory "${resolvedPath}".\n` +
-        `  Fix: Ensure the parent directory "${dirname(resolvedPath)}" exists and is writable,\n` +
-        `       or create it manually: mkdir -p "${resolvedPath}"\n` +
-        `  Details: ${err.code || ""} ${err.message}`,
+          `  Fix: Ensure the parent directory "${dirname(resolvedPath)}" exists and is writable,\n` +
+          `       or create it manually: mkdir -p "${resolvedPath}"\n` +
+          `  Details: ${err.code || ""} ${err.message}`,
       );
     }
   }
@@ -135,9 +160,9 @@ export function validateStoragePath(dbPath: string): string {
   } catch (err: any) {
     throw new Error(
       `dbPath directory "${resolvedPath}" is not writable.\n` +
-      `  Fix: Check permissions with: ls -la "${dirname(resolvedPath)}"\n` +
-      `       Or grant write access: chmod u+w "${resolvedPath}"\n` +
-      `  Details: ${err.code || ""} ${err.message}`,
+        `  Fix: Check permissions with: ls -la "${dirname(resolvedPath)}"\n` +
+        `       Or grant write access: chmod u+w "${resolvedPath}"\n` +
+        `  Details: ${err.code || ""} ${err.message}`,
     );
   }
 
@@ -154,11 +179,9 @@ export class MemoryStore {
   private db: LanceDB.Connection | null = null;
   private table: LanceDB.Table | null = null;
   private initPromise: Promise<void> | null = null;
-  private ftsSupported = false;
   private ftsIndexCreated = false;
-  private lastFtsError: string | null = null;
 
-  constructor(private readonly config: StoreConfig) { }
+  constructor(private readonly config: StoreConfig) {}
 
   get dbPath(): string {
     return this.config.dbPath;
@@ -190,7 +213,7 @@ export class MemoryStore {
       const message = err.message || String(err);
       throw new Error(
         `Failed to open LanceDB at "${this.config.dbPath}": ${code} ${message}\n` +
-        `  Fix: Verify the path exists and is writable. Check parent directory permissions.`,
+          `  Fix: Verify the path exists and is writable. Check parent directory permissions.`,
       );
     }
 
@@ -255,39 +278,23 @@ export class MemoryStore {
       }
     }
 
-    // Detect FTS capability via runtime probe
-    try {
-      const lancedb = await loadLanceDB();
-      this.ftsSupported = typeof (lancedb as any).Index?.fts === "function";
-    } catch {
-      this.ftsSupported = false;
-    }
-
     // Create FTS index for BM25 search (graceful fallback if unavailable)
-    if (this.ftsSupported) {
-      try {
-        await this.createFtsIndex(table);
-        this.ftsIndexCreated = true;
-        this.lastFtsError = null;
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.warn(
-          "Failed to create FTS index, falling back to vector-only search:",
-          errMsg,
-        );
-        this.ftsIndexCreated = false;
-        this.lastFtsError = errMsg;
-      }
-    } else {
+    try {
+      await this.createFtsIndex(table);
+      this.ftsIndexCreated = true;
+    } catch (err) {
+      console.warn(
+        "Failed to create FTS index, falling back to vector-only search:",
+        err,
+      );
       this.ftsIndexCreated = false;
-      this.lastFtsError = "LanceDB version does not support FTS";
     }
 
     this.db = db;
     this.table = table;
   }
 
-  private async createFtsIndex(table: LanceDB.Table, force = false): Promise<void> {
+  private async createFtsIndex(table: LanceDB.Table): Promise<void> {
     try {
       // Check if FTS index already exists
       const indices = await table.listIndices();
@@ -295,7 +302,7 @@ export class MemoryStore {
         (idx: any) => idx.indexType === "FTS" || idx.columns?.includes("text"),
       );
 
-      if (!hasFtsIndex || force) {
+      if (!hasFtsIndex) {
         // LanceDB @lancedb/lancedb >=0.26: use Index.fts() config
         const lancedb = await loadLanceDB();
         await table.createIndex("text", {
@@ -377,44 +384,43 @@ export class MemoryStore {
     return res.length > 0;
   }
 
-  /**
-   * Read a single memory entry by exact ID without any mutation.
-   * Unlike update(id, {}), this performs a pure read (no delete+add cycle).
-   */
-  async getById(id: string): Promise<MemoryEntry | null> {
+  async getById(id: string, scopeFilter?: string[]): Promise<MemoryEntry | null> {
     await this.ensureInitialized();
+
     const safeId = escapeSqlLiteral(id);
-    const rows = await this.table!.query()
+    const rows = await this.table!
+      .query()
       .where(`id = '${safeId}'`)
       .limit(1)
       .toArray();
+
     if (rows.length === 0) return null;
 
     const row = rows[0];
+    const rowScope = (row.scope as string | undefined) ?? "global";
+    if (scopeFilter && scopeFilter.length > 0 && !scopeFilter.includes(rowScope)) {
+      return null;
+    }
+
     return {
       id: row.id as string,
       text: row.text as string,
       vector: Array.from(row.vector as Iterable<number>),
       category: row.category as MemoryEntry["category"],
-      scope: (row.scope as string | undefined) ?? "global",
+      scope: rowScope,
       importance: Number(row.importance),
       timestamp: Number(row.timestamp),
       metadata: (row.metadata as string) || "{}",
     };
   }
 
-  async vectorSearch(
-    vector: number[],
-    limit = 5,
-    minScore = 0.3,
-    scopeFilter?: string[],
-  ): Promise<MemorySearchResult[]> {
+  async vectorSearch(vector: number[], limit = 5, minScore = 0.3, scopeFilter?: string[]): Promise<MemorySearchResult[]> {
     await this.ensureInitialized();
 
     const safeLimit = clampInt(limit, 1, 20);
     const fetchLimit = Math.min(safeLimit * 10, 200); // Over-fetch for scope filtering
 
-    let query = this.table!.vectorSearch(vector).distanceType('cosine').limit(fetchLimit);
+    let query = this.table!.vectorSearch(vector).limit(fetchLimit);
 
     // Apply scope filter if provided
     if (scopeFilter && scopeFilter.length > 0) {
@@ -471,11 +477,11 @@ export class MemoryStore {
   ): Promise<MemorySearchResult[]> {
     await this.ensureInitialized();
 
-    if (!this.ftsIndexCreated) {
-      return []; // Fallback to vector-only if FTS unavailable
-    }
-
     const safeLimit = clampInt(limit, 1, 20);
+
+    if (!this.ftsIndexCreated) {
+      return this.lexicalFallbackSearch(query, safeLimit, scopeFilter);
+    }
 
     try {
       // Use FTS query type explicitly
@@ -527,11 +533,73 @@ export class MemoryStore {
         });
       }
 
-      return mapped;
+      if (mapped.length > 0) {
+        return mapped;
+      }
+      return this.lexicalFallbackSearch(query, safeLimit, scopeFilter);
     } catch (err) {
       console.warn("BM25 search failed, falling back to empty results:", err);
-      return [];
+      return this.lexicalFallbackSearch(query, safeLimit, scopeFilter);
     }
+  }
+
+  private async lexicalFallbackSearch(query: string, limit: number, scopeFilter?: string[]): Promise<MemorySearchResult[]> {
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) return [];
+
+    let searchQuery = this.table!.query().select([
+      "id",
+      "text",
+      "vector",
+      "category",
+      "scope",
+      "importance",
+      "timestamp",
+      "metadata",
+    ]);
+
+    if (scopeFilter && scopeFilter.length > 0) {
+      const scopeConditions = scopeFilter
+        .map(scope => `scope = '${escapeSqlLiteral(scope)}'`)
+        .join(" OR ");
+      searchQuery = searchQuery.where(`(${scopeConditions}) OR scope IS NULL`);
+    }
+
+    const rows = await searchQuery.toArray();
+    const matches: MemorySearchResult[] = [];
+
+    for (const row of rows) {
+      const rowScope = (row.scope as string | undefined) ?? "global";
+      if (scopeFilter && scopeFilter.length > 0 && !scopeFilter.includes(rowScope)) {
+        continue;
+      }
+
+      const entry: MemoryEntry = {
+        id: row.id as string,
+        text: row.text as string,
+        vector: row.vector as number[],
+        category: row.category as MemoryEntry["category"],
+        scope: rowScope,
+        importance: Number(row.importance),
+        timestamp: Number(row.timestamp),
+        metadata: (row.metadata as string) || "{}",
+      };
+
+      const metadata = parseSmartMetadata(entry.metadata, entry);
+      const score = scoreLexicalHit(trimmedQuery, [
+        { text: entry.text, weight: 1 },
+        { text: metadata.l0_abstract, weight: 0.98 },
+        { text: metadata.l1_overview, weight: 0.92 },
+        { text: metadata.l2_content, weight: 0.96 },
+      ]);
+
+      if (score <= 0) continue;
+      matches.push({ entry, score });
+    }
+
+    return matches
+      .sort((a, b) => b.score - a.score || b.entry.timestamp - a.entry.timestamp)
+      .slice(0, limit);
   }
 
   async delete(id: string, scopeFilter?: string[]): Promise<boolean> {
@@ -769,10 +837,23 @@ export class MemoryStore {
     return updated;
   }
 
-  async bulkDelete(
-    scopeFilter: string[],
-    beforeTimestamp?: number,
-  ): Promise<number> {
+  async patchMetadata(
+    id: string,
+    patch: MetadataPatch,
+    scopeFilter?: string[],
+  ): Promise<MemoryEntry | null> {
+    const existing = await this.getById(id, scopeFilter);
+    if (!existing) return null;
+
+    const metadata = buildSmartMetadata(existing, patch);
+    return this.update(
+      id,
+      { metadata: stringifySmartMetadata(metadata) },
+      scopeFilter,
+    );
+  }
+
+  async bulkDelete(scopeFilter: string[], beforeTimestamp?: number): Promise<number> {
     await this.ensureInitialized();
 
     const conditions: string[] = [];
@@ -809,58 +890,6 @@ export class MemoryStore {
   }
 
   get hasFtsSupport(): boolean {
-    return this.ftsSupported;
-  }
-
-  get hasFtsIndex(): boolean {
     return this.ftsIndexCreated;
-  }
-
-  get canUseFts(): boolean {
-    return this.ftsSupported && this.ftsIndexCreated;
-  }
-
-  getFtsStatus(): { supported: boolean; indexExists: boolean; lastError: string | null } {
-    return {
-      supported: this.ftsSupported,
-      indexExists: this.ftsIndexCreated,
-      lastError: this.lastFtsError,
-    };
-  }
-
-  async rebuildFtsIndex(): Promise<{ success: boolean; error?: string }> {
-    await this.ensureInitialized();
-    if (!this.table) {
-      return { success: false, error: "Table not initialized" };
-    }
-    if (!this.ftsSupported) {
-      return { success: false, error: "FTS is not supported by the current LanceDB version" };
-    }
-
-    // Drop existing FTS index if present
-    try {
-      const indices = await this.table.listIndices();
-      const ftsIndex = indices?.find(
-        (idx: any) => idx.indexType === "FTS" || idx.columns?.includes("text"),
-      );
-      if (ftsIndex && ftsIndex.name) {
-        await this.table.dropIndex(ftsIndex.name);
-      }
-    } catch (dropErr) {
-      console.warn("Failed to drop existing FTS index, attempting force-create:", dropErr);
-    }
-
-    // Rebuild (force=true to skip hasFtsIndex early-return)
-    try {
-      await this.createFtsIndex(this.table, true);
-      this.ftsIndexCreated = true;
-      this.lastFtsError = null;
-      return { success: true };
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      this.ftsIndexCreated = false;
-      this.lastFtsError = errMsg;
-      return { success: false, error: errMsg };
-    }
   }
 }

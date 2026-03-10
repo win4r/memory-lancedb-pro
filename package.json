@@ -1,6 +1,6 @@
 {
   "name": "memory-lancedb-pro",
-  "version": "1.1.0-beta.6",
+  "version": "1.1.0-beta.5",
   "description": "OpenClaw enhanced LanceDB memory plugin with hybrid retrieval (Vector + BM25), cross-encoder rerank, multi-scope isolation, long-context chunking, and management CLI",
   "type": "module",
   "main": "index.ts",
@@ -35,7 +35,8 @@
     ]
   },
   "scripts": {
-    "test": "node --test --test-name-pattern='.' test/access-tracker.test.mjs test/config-session-strategy-migration.test.mjs test/embedder-error-hints.test.mjs test/jsonl-distill-slash-filter.test.mjs test/memory-reflection.test.mjs test/migrate-legacy-schema.test.mjs test/query-expander.test.mjs test/retriever-trace.test.mjs test/self-improvement.test.mjs test/session-recovery-paths.test.mjs test/vector-search-cosine.test.mjs test/vllm-provider.test.mjs && node test/cli-smoke.mjs"
+    "test": "node test/embedder-error-hints.test.mjs && node test/migrate-legacy-schema.test.mjs && node --test test/config-session-strategy-migration.test.mjs && node test/cli-smoke.mjs && node test/functional-e2e.mjs && node test/retriever-rerank-regression.mjs && node test/smart-memory-lifecycle.mjs && node test/smart-extractor-branches.mjs && node test/plugin-manifest-regression.mjs",
+    "test:openclaw-host": "node test/openclaw-host-functional.mjs"
   },
   "devDependencies": {
     "commander": "^14.0.0",

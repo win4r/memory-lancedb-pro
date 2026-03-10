@@ -2,7 +2,7 @@
   "id": "memory-lancedb-pro",
   "name": "Memory (LanceDB Pro)",
   "description": "Enhanced LanceDB-backed long-term memory with hybrid retrieval, multi-scope isolation, long-context chunking, and management CLI",
-  "version": "1.1.0-beta.6",
+  "version": "1.1.0-beta.5",
   "kind": "memory",
   "configSchema": {
     "type": "object",
@@ -61,7 +61,9 @@
             "description": "Enable automatic chunking for documents exceeding embedding context limits"
           }
         },
-        "required": []
+        "required": [
+          "apiKey"
+        ]
       },
       "dbPath": {
         "type": "string"
@@ -78,11 +80,12 @@
           "systemSessionMemory",
           "none"
         ],
-        "default": "systemSessionMemory",
-        "description": "Choose session pipeline: plugin memory-reflection, built-in session-memory, or none"
+        "default": "none",
+        "description": "Choose session pipeline: plugin memory-reflection, built-in session-memory, or none. Default none keeps session summaries disabled unless explicitly enabled."
       },
       "autoCapture": {
-        "type": "boolean"
+        "type": "boolean",
+        "default": true
       },
       "autoRecall": {
         "type": "boolean",
@@ -102,66 +105,27 @@
         "default": 0,
         "description": "Minimum number of turns before the same memory can be recalled again in the same session. Set to 0 to disable deduplication (default behavior: inject all memories)."
       },
-      "autoRecallTopK": {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 20,
-        "default": 3,
-        "description": "Maximum number of rows injected into <relevant-memories> for each turn."
+      "captureAssistant": {
+        "type": "boolean"
       },
-      "autoRecallSelectionMode": {
-        "type": "string",
-        "enum": [
-          "mmr",
-          "legacy",
-          "setwise-v2"
-        ],
-        "default": "mmr",
-        "description": "Generic Auto-Recall final top-k mode. mmr keeps direct truncation after post-processing as the canonical mode; legacy is accepted as a backward-compatible alias to mmr; setwise-v2 enables set-wise final selection with higher diversity/coverage but potentially lower average per-item relevance."
-      },
-      "autoRecallCategories": {
-        "type": "array",
-        "items": {
-          "type": "string",
-          "enum": [
-            "preference",
-            "fact",
-            "decision",
-            "entity",
-            "other",
-            "reflection"
-          ]
-        },
-        "default": [
-          "preference",
-          "fact",
-          "decision",
-          "entity",
-          "other"
-        ],
-        "description": "Allowlist of memory categories eligible for generic Auto-Recall."
-      },
-      "autoRecallExcludeReflection": {
+      "smartExtraction": {
         "type": "boolean",
         "default": true,
-        "description": "Exclude category=reflection rows from generic Auto-Recall."
+        "description": "Enable LLM-powered memory extraction. Falls back to regex capture when false."
       },
-      "autoRecallMaxAgeDays": {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 3650,
-        "default": 30,
-        "description": "Drop Auto-Recall candidates older than this many days."
-      },
-      "autoRecallMaxEntriesPerKey": {
+      "extractMinMessages": {
         "type": "integer",
         "minimum": 1,
         "maximum": 100,
-        "default": 10,
-        "description": "Per normalized text key, keep only the most recent N entries before Auto-Recall final trimming."
+        "default": 2,
+        "description": "Minimum conversation messages required before smart extraction runs."
       },
-      "captureAssistant": {
-        "type": "boolean"
+      "extractMaxChars": {
+        "type": "integer",
+        "minimum": 256,
+        "maximum": 100000,
+        "default": 8000,
+        "description": "Maximum conversation characters sent to the smart extraction LLM."
       },
       "retrieval": {
         "type": "object",
@@ -222,11 +186,10 @@
               "jina",
               "siliconflow",
               "voyage",
-              "pinecone",
-              "vllm"
+              "pinecone"
             ],
             "default": "jina",
-            "description": "Reranker provider format. Determines request/response shape and auth header. Use 'vllm' for Docker Model Runner."
+            "description": "Reranker provider format. Determines request/response shape and auth header."
           },
           "candidatePoolSize": {
             "type": "integer",
@@ -290,6 +253,38 @@
           }
         }
       },
+      "decay": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "recencyHalfLifeDays": { "type": "number", "minimum": 1, "maximum": 365, "default": 30 },
+          "recencyWeight": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.4 },
+          "frequencyWeight": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.3 },
+          "intrinsicWeight": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.3 },
+          "staleThreshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.3 },
+          "searchBoostMin": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.3 },
+          "importanceModulation": { "type": "number", "minimum": 0, "maximum": 10, "default": 1.5 },
+          "betaCore": { "type": "number", "minimum": 0.1, "maximum": 5, "default": 0.8 },
+          "betaWorking": { "type": "number", "minimum": 0.1, "maximum": 5, "default": 1.0 },
+          "betaPeripheral": { "type": "number", "minimum": 0.1, "maximum": 5, "default": 1.3 },
+          "coreDecayFloor": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.9 },
+          "workingDecayFloor": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 },
+          "peripheralDecayFloor": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.5 }
+        }
+      },
+      "tier": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "coreAccessThreshold": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 10 },
+          "coreCompositeThreshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 },
+          "coreImportanceThreshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.8 },
+          "peripheralCompositeThreshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.15 },
+          "peripheralAgeDays": { "type": "integer", "minimum": 1, "maximum": 3650, "default": 60 },
+          "workingAccessThreshold": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 3 },
+          "workingCompositeThreshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.4 }
+        }
+      },
       "sessionMemory": {
         "type": "object",
         "additionalProperties": false,
@@ -297,7 +292,8 @@
         "properties": {
           "enabled": {
             "type": "boolean",
-            "description": "Deprecated. true -> sessionStrategy=systemSessionMemory, false -> sessionStrategy=none."
+            "default": false,
+            "description": "Deprecated. true -> sessionStrategy=systemSessionMemory, false -> sessionStrategy=none. Disabled by default."
           },
           "messageCount": {
             "type": "integer",
@@ -335,6 +331,10 @@
         "additionalProperties": false,
         "properties": {
           "storeToLanceDB": {
+            "type": "boolean",
+            "default": true
+          },
+          "writeLegacyCombined": {
             "type": "boolean",
             "default": true
           },
@@ -388,69 +388,6 @@
           "dedupeErrorSignals": {
             "type": "boolean",
             "default": true
-          },
-          "recall": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "mode": {
-                "type": "string",
-                "enum": [
-                  "fixed",
-                  "dynamic"
-                ],
-                "default": "fixed"
-              },
-              "topK": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 20,
-                "default": 6
-              },
-              "includeKinds": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "enum": [
-                    "invariant",
-                    "derived"
-                  ]
-                },
-                "default": [
-                  "invariant"
-                ]
-              },
-              "maxAgeDays": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 3650,
-                "default": 45
-              },
-              "maxEntriesPerKey": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 100,
-                "default": 10
-              },
-              "minRepeated": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 100,
-                "default": 2
-              },
-              "minScore": {
-                "type": "number",
-                "minimum": 0,
-                "maximum": 5,
-                "default": 0.18
-              },
-              "minPromptLength": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 200,
-                "default": 8
-              }
-            }
           }
         }
       },
@@ -481,6 +418,22 @@
                 "type": "string"
               }
             }
+          }
+        }
+      },
+      "llm": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "apiKey": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string",
+            "default": "openai/gpt-oss-120b"
+          },
+          "baseURL": {
+            "type": "string"
           }
         }
       },
@@ -547,7 +500,7 @@
     },
     "embedding.chunking": {
       "label": "Auto-Chunk Documents",
-      "help": "Automatically split long documents into chunks when they exceed embedding context limits. Set to false to disable and let the model fail on long documents.",
+      "help": "Automatically split long documents into chunks when they exceed embedding context limits. Enabled by default.",
       "advanced": true
     },
     "dbPath": {
@@ -556,9 +509,39 @@
       "help": "Directory path for the LanceDB database files",
       "advanced": true
     },
+    "smartExtraction": {
+      "label": "Smart Extraction",
+      "help": "Enable LLM-powered 6-category memory extraction. Falls back to regex capture when off."
+    },
+    "llm.apiKey": {
+      "label": "LLM API Key",
+      "sensitive": true,
+      "help": "API key for smart extraction LLM (defaults to embedding apiKey)",
+      "advanced": true
+    },
+    "llm.model": {
+      "label": "LLM Model",
+      "help": "Model for memory extraction and dedup (default: gpt-4o-mini)",
+      "advanced": true
+    },
+    "llm.baseURL": {
+      "label": "LLM Base URL",
+      "help": "Base URL for LLM API (defaults to embedding baseURL)",
+      "advanced": true
+    },
+    "extractMinMessages": {
+      "label": "Min Messages for Extraction",
+      "help": "Minimum conversation messages before smart extraction triggers",
+      "advanced": true
+    },
+    "extractMaxChars": {
+      "label": "Max Chars for Extraction",
+      "help": "Maximum conversation characters to process for extraction",
+      "advanced": true
+    },
     "autoCapture": {
       "label": "Auto-Capture",
-      "help": "Automatically capture important information from conversations"
+      "help": "Automatically capture important information from conversations (enabled by default)"
     },
     "autoRecall": {
       "label": "Auto-Recall",
@@ -572,36 +555,6 @@
     "autoRecallMinRepeated": {
       "label": "Auto-Recall Min Repeated",
       "help": "Minimum number of conversation turns before a specific memory can be re-injected in the same session.",
-      "advanced": true
-    },
-    "autoRecallTopK": {
-      "label": "Auto-Recall Top K",
-      "help": "Maximum rows injected into <relevant-memories> each turn.",
-      "advanced": true
-    },
-    "autoRecallSelectionMode": {
-      "label": "Auto-Recall Selection Mode",
-      "help": "Generic final top-k mode: mmr is the canonical direct-truncation mode; legacy remains a backward-compatible alias to mmr; setwise-v2 enables a more diverse final selector with possible average relevance tradeoffs.",
-      "advanced": true
-    },
-    "autoRecallCategories": {
-      "label": "Auto-Recall Categories",
-      "help": "Allowlist of categories eligible for generic auto-recall.",
-      "advanced": true
-    },
-    "autoRecallExcludeReflection": {
-      "label": "Exclude Reflection From Auto-Recall",
-      "help": "Exclude category=reflection rows from <relevant-memories>.",
-      "advanced": true
-    },
-    "autoRecallMaxAgeDays": {
-      "label": "Auto-Recall Max Age (days)",
-      "help": "Drop auto-recall candidates older than this many days.",
-      "advanced": true
-    },
-    "autoRecallMaxEntriesPerKey": {
-      "label": "Auto-Recall Max Entries Per Key",
-      "help": "Per normalized text key, keep only the most recent N entries before top-k trimming.",
       "advanced": true
     },
     "captureAssistant": {
@@ -655,7 +608,7 @@
     },
     "retrieval.rerankProvider": {
       "label": "Reranker Provider",
-      "help": "Provider format: jina (default), siliconflow, voyage, pinecone, or vllm (Docker Model Runner)",
+      "help": "Provider format: jina (default), siliconflow, voyage, or pinecone",
       "advanced": true
     },
     "retrieval.candidatePoolSize": {
@@ -676,6 +629,56 @@
     "retrieval.timeDecayHalfLifeDays": {
       "label": "Time Decay Half-Life",
       "help": "Old entries lose score over this many days. Floor at 0.5x. 0 = disabled.",
+      "advanced": true
+    },
+    "decay.recencyHalfLifeDays": {
+      "label": "Decay Half-Life",
+      "help": "Base half-life for Weibull lifecycle decay.",
+      "advanced": true
+    },
+    "decay.frequencyWeight": {
+      "label": "Decay Frequency Weight",
+      "help": "Weight of access frequency in lifecycle score.",
+      "advanced": true
+    },
+    "decay.intrinsicWeight": {
+      "label": "Decay Intrinsic Weight",
+      "help": "Weight of importance × confidence in lifecycle score.",
+      "advanced": true
+    },
+    "decay.betaCore": {
+      "label": "Core Beta",
+      "help": "Weibull beta for core memories.",
+      "advanced": true
+    },
+    "decay.betaWorking": {
+      "label": "Working Beta",
+      "help": "Weibull beta for working memories.",
+      "advanced": true
+    },
+    "decay.betaPeripheral": {
+      "label": "Peripheral Beta",
+      "help": "Weibull beta for peripheral memories.",
+      "advanced": true
+    },
+    "tier.coreAccessThreshold": {
+      "label": "Core Access Threshold",
+      "help": "Minimum recall count before promoting to core.",
+      "advanced": true
+    },
+    "tier.coreCompositeThreshold": {
+      "label": "Core Composite Threshold",
+      "help": "Minimum lifecycle composite before promoting to core.",
+      "advanced": true
+    },
+    "tier.peripheralCompositeThreshold": {
+      "label": "Peripheral Composite Threshold",
+      "help": "Memories below this lifecycle score can demote to peripheral.",
+      "advanced": true
+    },
+    "tier.peripheralAgeDays": {
+      "label": "Peripheral Age Days",
+      "help": "Age threshold for demoting stale working memories.",
       "advanced": true
     },
     "sessionMemory.enabled": {
@@ -715,6 +718,11 @@
     "memoryReflection.storeToLanceDB": {
       "label": "Store Reflection To LanceDB",
       "help": "Persist reflection event + item rows to LanceDB (effective only under memoryReflection strategy)",
+      "advanced": true
+    },
+    "memoryReflection.writeLegacyCombined": {
+      "label": "Write Legacy Combined Reflection",
+      "help": "Compatibility switch: also write legacy combined memory-reflection rows during migration.",
       "advanced": true
     },
     "memoryReflection.injectMode": {
@@ -757,46 +765,6 @@
       "help": "Deduplicate repeated error signatures per session",
       "advanced": true
     },
-    "memoryReflection.recall.mode": {
-      "label": "Reflection-Recall Mode",
-      "help": "fixed keeps compatibility inheritance; dynamic enables prompt-gated Reflection-Recall.",
-      "advanced": true
-    },
-    "memoryReflection.recall.topK": {
-      "label": "Reflection-Recall Top K",
-      "help": "Maximum rows injected into <inherited-rules> in dynamic mode.",
-      "advanced": true
-    },
-    "memoryReflection.recall.includeKinds": {
-      "label": "Reflection-Recall Include Kinds",
-      "help": "Which reflection item kinds are considered in dynamic mode (invariant/derived).",
-      "advanced": true
-    },
-    "memoryReflection.recall.maxAgeDays": {
-      "label": "Reflection-Recall Max Age (days)",
-      "help": "Drop dynamic reflection candidates older than this many days.",
-      "advanced": true
-    },
-    "memoryReflection.recall.maxEntriesPerKey": {
-      "label": "Reflection-Recall Max Entries Per Key",
-      "help": "Per normalized key, keep only the most recent N rows before dynamic aggregation.",
-      "advanced": true
-    },
-    "memoryReflection.recall.minRepeated": {
-      "label": "Reflection-Recall Min Repeated",
-      "help": "Minimum turn gap before re-injecting the same dynamic reflection row in one session.",
-      "advanced": true
-    },
-    "memoryReflection.recall.minScore": {
-      "label": "Reflection-Recall Min Score",
-      "help": "Minimum aggregated score required for dynamic reflection injection.",
-      "advanced": true
-    },
-    "memoryReflection.recall.minPromptLength": {
-      "label": "Reflection-Recall Min Prompt Length",
-      "help": "Prompts shorter than this are skipped in dynamic reflection mode.",
-      "advanced": true
-    },
     "scopes.default": {
       "label": "Default Scope",
       "help": "Default memory scope for new memories",
@@ -824,6 +792,23 @@
     "mdMirror.dir": {
       "label": "Mirror Fallback Directory",
       "help": "Fallback directory when agent workspace mapping is unavailable",
+      "advanced": true
+    },
+    "llm.apiKey": {
+      "label": "LLM API Key",
+      "sensitive": true,
+      "placeholder": "sk-... or ${GROQ_API_KEY}",
+      "help": "API key for LLM used by smart memory extraction (defaults to embedding.apiKey if omitted)"
+    },
+    "llm.model": {
+      "label": "LLM Model",
+      "placeholder": "openai/gpt-oss-120b",
+      "help": "OpenAI-compatible chat model for memory extraction/summary"
+    },
+    "llm.baseURL": {
+      "label": "LLM Base URL",
+      "placeholder": "https://api.groq.com/openai/v1",
+      "help": "OpenAI-compatible base URL for LLM (defaults to embedding.baseURL if omitted)",
       "advanced": true
     }
   }

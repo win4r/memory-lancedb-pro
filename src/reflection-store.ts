@@ -1,4 +1,4 @@
-import type { MemoryEntry } from "./store.js";
+import type { MemoryEntry, MemorySearchResult } from "./store.js";
 import {
   extractReflectionSliceItems,
   extractReflectionSlices,
@@ -17,21 +17,15 @@ import {
 } from "./reflection-item-store.js";
 import { getReflectionMappedDecayDefaults, type ReflectionMappedKind } from "./reflection-mapped-metadata.js";
 import { computeReflectionScore, normalizeReflectionLineForAggregation } from "./reflection-ranking.js";
-import { aggregateReflectionGroups, type ReflectionScoredItem } from "./reflection-aggregation.js";
-import { normalizeReflectionSoftKey, normalizeReflectionStrictKey } from "./reflection-normalize.js";
-import {
-  DERIVED_FOCUS_V2_FINAL_TARGET,
-  DERIVED_FOCUS_V2_SHORTLIST_TARGET,
-  selectDiversityAwareReflectionGroups,
-} from "./reflection-selection.js";
+
+export const REFLECTION_DERIVE_LOGISTIC_MIDPOINT_DAYS = 3;
+export const REFLECTION_DERIVE_LOGISTIC_K = 1.2;
+export const REFLECTION_DERIVE_FALLBACK_BASE_WEIGHT = 0.35;
 
 export const DEFAULT_REFLECTION_DERIVED_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 export const DEFAULT_REFLECTION_MAPPED_MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000;
-const LEGACY_REFLECTION_DERIVED_SLICE_LIMIT = 10;
-export const DEFAULT_REFLECTION_DERIVED_SHORTLIST_LIMIT = DERIVED_FOCUS_V2_SHORTLIST_TARGET;
-export const DEFAULT_REFLECTION_DERIVED_FINAL_LIMIT = DERIVED_FOCUS_V2_FINAL_TARGET;
 
-type ReflectionStoreKind = "event" | "item-invariant" | "item-derived";
+type ReflectionStoreKind = "event" | "item-invariant" | "item-derived" | "combined-legacy";
 
 type ReflectionErrorSignalLike = {
   signatureHash: string;
@@ -55,6 +49,7 @@ interface BuildReflectionStorePayloadsParams {
   usedFallback: boolean;
   eventId?: string;
   sourceReflectionPath?: string;
+  writeLegacyCombined?: boolean;
 }
 
 export function buildReflectionStorePayloads(params: BuildReflectionStorePayloadsParams): {
@@ -99,15 +94,91 @@ export function buildReflectionStorePayloads(params: BuildReflectionStorePayload
   });
   payloads.push(...itemPayloads);
 
+  if (params.writeLegacyCombined !== false && (slices.invariants.length > 0 || slices.derived.length > 0)) {
+    payloads.push(buildLegacyCombinedPayload({
+      slices,
+      scope: params.scope,
+      sessionKey: params.sessionKey,
+      sessionId: params.sessionId,
+      agentId: params.agentId,
+      command: params.command,
+      toolErrorSignals: params.toolErrorSignals,
+      runAt: params.runAt,
+      usedFallback: params.usedFallback,
+      sourceReflectionPath: params.sourceReflectionPath,
+    }));
+  }
+
   return { eventId, slices, payloads };
+}
+
+function buildLegacyCombinedPayload(params: {
+  slices: ReflectionSlices;
+  sessionKey: string;
+  sessionId: string;
+  agentId: string;
+  command: string;
+  scope: string;
+  toolErrorSignals: ReflectionErrorSignalLike[];
+  runAt: number;
+  usedFallback: boolean;
+  sourceReflectionPath?: string;
+}): ReflectionStorePayload {
+  const dateYmd = new Date(params.runAt).toISOString().split("T")[0];
+  const deriveQuality = computeDerivedLineQuality(params.slices.derived.length);
+  const deriveBaseWeight = params.usedFallback ? REFLECTION_DERIVE_FALLBACK_BASE_WEIGHT : 1;
+
+  return {
+    kind: "combined-legacy",
+    text: [
+      `reflection · ${params.scope} · ${dateYmd}`,
+      `Session Reflection (${new Date(params.runAt).toISOString()})`,
+      `Session Key: ${params.sessionKey}`,
+      `Session ID: ${params.sessionId}`,
+      "",
+      "Invariants:",
+      ...(params.slices.invariants.length > 0 ? params.slices.invariants.map((x) => `- ${x}`) : ["- (none captured)"]),
+      "",
+      "Derived:",
+      ...(params.slices.derived.length > 0 ? params.slices.derived.map((x) => `- ${x}`) : ["- (none captured)"]),
+    ].join("\n"),
+    metadata: {
+      type: "memory-reflection",
+      stage: "reflect-store",
+      reflectionVersion: 3,
+      sessionKey: params.sessionKey,
+      sessionId: params.sessionId,
+      agentId: params.agentId,
+      command: params.command,
+      storedAt: params.runAt,
+      invariants: params.slices.invariants,
+      derived: params.slices.derived,
+      usedFallback: params.usedFallback,
+      errorSignals: params.toolErrorSignals.map((s) => s.signatureHash),
+      decayModel: "logistic",
+      decayMidpointDays: REFLECTION_DERIVE_LOGISTIC_MIDPOINT_DAYS,
+      decayK: REFLECTION_DERIVE_LOGISTIC_K,
+      deriveBaseWeight,
+      deriveQuality,
+      deriveSource: params.usedFallback ? "fallback" : "normal",
+      ...(params.sourceReflectionPath ? { sourceReflectionPath: params.sourceReflectionPath } : {}),
+    },
+  };
 }
 
 interface ReflectionStoreDeps {
   embedPassage: (text: string) => Promise<number[]>;
+  vectorSearch: (
+    vector: number[],
+    limit?: number,
+    minScore?: number,
+    scopeFilter?: string[]
+  ) => Promise<MemorySearchResult[]>;
   store: (entry: Omit<MemoryEntry, "id" | "timestamp">) => Promise<MemoryEntry>;
 }
 
 interface StoreReflectionToLanceDBParams extends BuildReflectionStorePayloadsParams, ReflectionStoreDeps {
+  dedupeThreshold?: number;
 }
 
 export async function storeReflectionToLanceDB(params: StoreReflectionToLanceDBParams): Promise<{
@@ -118,9 +189,17 @@ export async function storeReflectionToLanceDB(params: StoreReflectionToLanceDBP
 }> {
   const { eventId, slices, payloads } = buildReflectionStorePayloads(params);
   const storedKinds: ReflectionStoreKind[] = [];
+  const dedupeThreshold = Number.isFinite(params.dedupeThreshold) ? Number(params.dedupeThreshold) : 0.97;
 
   for (const payload of payloads) {
     const vector = await params.embedPassage(payload.text);
+
+    if (payload.kind === "combined-legacy") {
+      const existing = await params.vectorSearch(vector, 1, 0.1, [params.scope]);
+      if (existing.length > 0 && existing[0].score > dedupeThreshold) {
+        continue;
+      }
+    }
 
     await params.store({
       text: payload.text,
@@ -139,7 +218,8 @@ export async function storeReflectionToLanceDB(params: StoreReflectionToLanceDBP
 function resolveReflectionImportance(kind: ReflectionStoreKind): number {
   if (kind === "event") return 0.55;
   if (kind === "item-invariant") return 0.82;
-  return 0.78;
+  if (kind === "item-derived") return 0.78;
+  return 0.75;
 }
 
 export interface LoadReflectionSlicesParams {
@@ -150,68 +230,9 @@ export interface LoadReflectionSlicesParams {
   invariantMaxAgeMs?: number;
 }
 
-export interface ScoredReflectionLine {
-  text: string;
-  score: number;
-  latestTs: number;
-}
-
 export function loadAgentReflectionSlicesFromEntries(params: LoadReflectionSlicesParams): {
   invariants: string[];
   derived: string[];
-} {
-  const ranked = loadAgentReflectionRankedSlicesFromEntries(params, {
-    derivedShortlistLimit: LEGACY_REFLECTION_DERIVED_SLICE_LIMIT,
-    derivedFinalLimit: LEGACY_REFLECTION_DERIVED_SLICE_LIMIT,
-  });
-  return {
-    invariants: ranked.invariants.map((row) => row.text),
-    derived: ranked.derived.map((row) => row.text),
-  };
-}
-
-export function loadAgentDerivedRowsWithScoresFromEntries(
-  params: LoadReflectionSlicesParams & { limit?: number; finalLimit?: number }
-): ScoredReflectionLine[] {
-  const shortlistLimit = Number.isFinite(params.limit)
-    ? Math.max(1, Math.floor(Number(params.limit)))
-    : DEFAULT_REFLECTION_DERIVED_SHORTLIST_LIMIT;
-  const finalLimit = Number.isFinite(params.finalLimit)
-    ? Math.max(1, Math.floor(Number(params.finalLimit)))
-    : shortlistLimit;
-  const ranked = loadAgentReflectionRankedSlicesFromEntries(params, {
-    derivedShortlistLimit: shortlistLimit,
-    derivedFinalLimit: finalLimit,
-  });
-  return ranked.derived;
-}
-
-export function loadAgentDerivedFocusRowsForHandoffFromEntries(
-  params: LoadReflectionSlicesParams & {
-    shortlistLimit?: number;
-    finalLimit?: number;
-  }
-): ScoredReflectionLine[] {
-  const shortlistLimit = Number.isFinite(params.shortlistLimit)
-    ? Math.max(1, Math.floor(Number(params.shortlistLimit)))
-    : DEFAULT_REFLECTION_DERIVED_SHORTLIST_LIMIT;
-  const finalLimit = Number.isFinite(params.finalLimit)
-    ? Math.max(1, Math.floor(Number(params.finalLimit)))
-    : DEFAULT_REFLECTION_DERIVED_FINAL_LIMIT;
-
-  return loadAgentDerivedRowsWithScoresFromEntries({
-    ...params,
-    limit: shortlistLimit,
-    finalLimit,
-  });
-}
-
-function loadAgentReflectionRankedSlicesFromEntries(
-  params: LoadReflectionSlicesParams,
-  options?: { derivedShortlistLimit?: number; derivedFinalLimit?: number }
-): {
-  invariants: ScoredReflectionLine[];
-  derived: ScoredReflectionLine[];
 } {
   const now = Number.isFinite(params.now) ? Number(params.now) : Date.now();
   const deriveMaxAgeMs = Number.isFinite(params.deriveMaxAgeMs)
@@ -228,26 +249,21 @@ function loadAgentReflectionRankedSlicesFromEntries(
     .slice(0, 160);
 
   const itemRows = reflectionRows.filter(({ metadata }) => metadata.type === "memory-reflection-item");
-  const invariantCandidates = buildInvariantCandidates(itemRows);
-  const derivedCandidates = buildDerivedCandidates(itemRows);
-  const derivedShortlistLimit = Number.isFinite(options?.derivedShortlistLimit)
-    ? Math.max(1, Math.floor(Number(options?.derivedShortlistLimit)))
-    : LEGACY_REFLECTION_DERIVED_SLICE_LIMIT;
-  const derivedFinalLimit = Number.isFinite(options?.derivedFinalLimit)
-    ? Math.max(1, Math.floor(Number(options?.derivedFinalLimit)))
-    : derivedShortlistLimit;
+  const legacyRows = reflectionRows.filter(({ metadata }) => metadata.type === "memory-reflection");
 
-  const invariants = rankReflectionLineScoresLinear(invariantCandidates, {
+  const invariantCandidates = buildInvariantCandidates(itemRows, legacyRows);
+  const derivedCandidates = buildDerivedCandidates(itemRows, legacyRows);
+
+  const invariants = rankReflectionLines(invariantCandidates, {
     now,
     maxAgeMs: invariantMaxAgeMs,
     limit: 8,
   });
 
-  const derived = rankDerivedReflectionLineScoresV2(derivedCandidates, {
+  const derived = rankReflectionLines(derivedCandidates, {
     now,
     maxAgeMs: deriveMaxAgeMs,
-    shortlistLimit: derivedShortlistLimit,
-    finalLimit: derivedFinalLimit,
+    limit: 10,
   });
 
   return { invariants, derived };
@@ -264,9 +280,10 @@ type WeightedLineCandidate = {
 };
 
 function buildInvariantCandidates(
-  itemRows: Array<{ entry: MemoryEntry; metadata: Record<string, unknown> }>
+  itemRows: Array<{ entry: MemoryEntry; metadata: Record<string, unknown> }>,
+  legacyRows: Array<{ entry: MemoryEntry; metadata: Record<string, unknown> }>
 ): WeightedLineCandidate[] {
-  return itemRows
+  const itemCandidates = itemRows
     .filter(({ metadata }) => metadata.itemKind === "invariant")
     .flatMap(({ entry, metadata }) => {
       const lines = sanitizeReflectionSliceLines([entry.text]);
@@ -284,12 +301,30 @@ function buildInvariantCandidates(
         usedFallback: metadata.usedFallback === true,
       }));
     });
+
+  if (itemCandidates.length > 0) return itemCandidates;
+
+  return legacyRows.flatMap(({ entry, metadata }) => {
+    const defaults = getReflectionItemDecayDefaults("invariant");
+    const timestamp = metadataTimestamp(metadata, entry.timestamp);
+    const lines = sanitizeReflectionSliceLines(toStringArray(metadata.invariants));
+    return lines.map((line) => ({
+      line,
+      timestamp,
+      midpointDays: defaults.midpointDays,
+      k: defaults.k,
+      baseWeight: defaults.baseWeight,
+      quality: defaults.quality,
+      usedFallback: metadata.usedFallback === true,
+    }));
+  });
 }
 
 function buildDerivedCandidates(
-  itemRows: Array<{ entry: MemoryEntry; metadata: Record<string, unknown> }>
+  itemRows: Array<{ entry: MemoryEntry; metadata: Record<string, unknown> }>,
+  legacyRows: Array<{ entry: MemoryEntry; metadata: Record<string, unknown> }>
 ): WeightedLineCandidate[] {
-  return itemRows
+  const itemCandidates = itemRows
     .filter(({ metadata }) => metadata.itemKind === "derived")
     .flatMap(({ entry, metadata }) => {
       const lines = sanitizeReflectionSliceLines([entry.text]);
@@ -307,12 +342,37 @@ function buildDerivedCandidates(
         usedFallback: metadata.usedFallback === true,
       }));
     });
+
+  if (itemCandidates.length > 0) return itemCandidates;
+
+  return legacyRows.flatMap(({ entry, metadata }) => {
+    const timestamp = metadataTimestamp(metadata, entry.timestamp);
+    const lines = sanitizeReflectionSliceLines(toStringArray(metadata.derived));
+    if (lines.length === 0) return [];
+
+    const defaults = {
+      midpointDays: REFLECTION_DERIVE_LOGISTIC_MIDPOINT_DAYS,
+      k: REFLECTION_DERIVE_LOGISTIC_K,
+      baseWeight: resolveLegacyDeriveBaseWeight(metadata),
+      quality: computeDerivedLineQuality(lines.length),
+    };
+
+    return lines.map((line) => ({
+      line,
+      timestamp,
+      midpointDays: readPositiveNumber(metadata.decayMidpointDays, defaults.midpointDays),
+      k: readPositiveNumber(metadata.decayK, defaults.k),
+      baseWeight: readPositiveNumber(metadata.deriveBaseWeight, defaults.baseWeight),
+      quality: readClampedNumber(metadata.deriveQuality, defaults.quality, 0.2, 1),
+      usedFallback: metadata.usedFallback === true,
+    }));
+  });
 }
 
-function rankReflectionLineScoresLinear(
+function rankReflectionLines(
   candidates: WeightedLineCandidate[],
   options: { now: number; maxAgeMs?: number; limit: number }
-): ScoredReflectionLine[] {
+): string[] {
   type WeightedLine = { line: string; score: number; latestTs: number };
   const lineScores = new Map<string, WeightedLine>();
 
@@ -356,75 +416,24 @@ function rankReflectionLineScoresLinear(
       return a.line.localeCompare(b.line);
     })
     .slice(0, options.limit)
-    .map((item) => ({
-      text: item.line,
-      score: Number(item.score.toFixed(6)),
-      latestTs: item.latestTs,
-    }));
-}
-
-function rankDerivedReflectionLineScoresV2(
-  candidates: WeightedLineCandidate[],
-  options: { now: number; maxAgeMs?: number; shortlistLimit: number; finalLimit: number }
-): ScoredReflectionLine[] {
-  const scoredItems: ReflectionScoredItem[] = [];
-  for (const candidate of candidates) {
-    const timestamp = Number.isFinite(candidate.timestamp) ? candidate.timestamp : options.now;
-    if (Number.isFinite(options.maxAgeMs) && options.maxAgeMs! >= 0 && options.now - timestamp > options.maxAgeMs!) {
-      continue;
-    }
-
-    const ageDays = Math.max(0, (options.now - timestamp) / 86_400_000);
-    const score = computeReflectionScore({
-      ageDays,
-      midpointDays: candidate.midpointDays,
-      k: candidate.k,
-      baseWeight: candidate.baseWeight,
-      quality: candidate.quality,
-      usedFallback: candidate.usedFallback,
-    });
-    if (!Number.isFinite(score) || score <= 0) continue;
-
-    const strictKey = normalizeReflectionStrictKey(candidate.line);
-    if (!strictKey) continue;
-    const softKey = normalizeReflectionSoftKey(candidate.line) || strictKey;
-
-    scoredItems.push({
-      text: candidate.line,
-      ts: timestamp,
-      score,
-      quality: candidate.quality,
-      isFallback: candidate.usedFallback,
-      strictKey,
-      softKey,
-    });
-  }
-
-  if (scoredItems.length === 0) return [];
-
-  const groups = aggregateReflectionGroups(scoredItems, options.now);
-  const selected = selectDiversityAwareReflectionGroups(groups, {
-    shortlistTarget: options.shortlistLimit,
-    finalTarget: options.finalLimit,
-  });
-
-  return selected
-    .filter((group) => Number.isFinite(group.finalScore) && group.finalScore > 0)
-    .map((group) => ({
-      text: group.representative.text,
-      score: Number(group.finalScore.toFixed(6)),
-      latestTs: group.latestTs,
-    }));
+    .map((item) => item.line);
 }
 
 function isReflectionMetadataType(type: unknown): boolean {
-  return type === "memory-reflection-item";
+  return type === "memory-reflection-item" || type === "memory-reflection";
 }
 
 function isOwnedByAgent(metadata: Record<string, unknown>, agentId: string): boolean {
   const owner = typeof metadata.agentId === "string" ? metadata.agentId.trim() : "";
   if (!owner) return true;
   return owner === agentId || owner === "main";
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item).trim())
+    .filter(Boolean);
 }
 
 function metadataTimestamp(metadata: Record<string, unknown>, fallbackTs: number): number {
@@ -443,6 +452,23 @@ function readClampedNumber(value: unknown, fallback: number, min: number, max: n
   const num = Number(value);
   const resolved = Number.isFinite(num) ? num : fallback;
   return Math.max(min, Math.min(max, resolved));
+}
+
+export function computeDerivedLineQuality(nonPlaceholderLineCount: number): number {
+  const n = Number.isFinite(nonPlaceholderLineCount) ? Math.max(0, Math.floor(nonPlaceholderLineCount)) : 0;
+  if (n <= 0) return 0.2;
+  return Math.min(1, 0.55 + Math.min(6, n) * 0.075);
+}
+
+function resolveLegacyDeriveBaseWeight(metadata: Record<string, unknown>): number {
+  const explicit = Number(metadata.deriveBaseWeight);
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return Math.max(0.1, Math.min(1.2, explicit));
+  }
+  if (metadata.usedFallback === true) {
+    return REFLECTION_DERIVE_FALLBACK_BASE_WEIGHT;
+  }
+  return 1;
 }
 
 export interface LoadReflectionMappedRowsParams {

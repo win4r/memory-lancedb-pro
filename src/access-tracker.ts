@@ -83,9 +83,14 @@ export function parseAccessMetadata(
 
   const obj = parsed as Record<string, unknown>;
 
-  const rawCount = typeof obj.accessCount === "number" ? obj.accessCount : 0;
+  // Support both camelCase and snake_case keys (beta smart-memory uses snake_case).
+  const rawCountAny = obj.accessCount ?? obj.access_count;
+  const rawCount =
+    typeof rawCountAny === "number" ? rawCountAny : Number(rawCountAny ?? 0);
+
+  const rawLastAny = obj.lastAccessedAt ?? obj.last_accessed_at;
   const rawLastAccessed =
-    typeof obj.lastAccessedAt === "number" ? obj.lastAccessedAt : 0;
+    typeof rawLastAny === "number" ? rawLastAny : Number(rawLastAny ?? 0);
 
   return {
     accessCount: clampAccessCount(rawCount),
@@ -126,10 +131,15 @@ export function buildUpdatedMetadata(
   const prev = parseAccessMetadata(existingMetadata);
   const newCount = clampAccessCount(prev.accessCount + accessDelta);
 
+  const now = Date.now();
+
   return JSON.stringify({
     ...existing,
+    // Write both camelCase and snake_case for compatibility.
     accessCount: newCount,
-    lastAccessedAt: Date.now(),
+    lastAccessedAt: now,
+    access_count: newCount,
+    last_accessed_at: now,
   });
 }
 

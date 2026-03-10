@@ -5,14 +5,6 @@
  * Saves embedding API calls and reduces noise injection.
  */
 
-// Control/system prompts that should never trigger retrieval
-const CONTROL_PROMPT_SKIP_PATTERNS = [
-  // Session-start/control boilerplate wrappers
-  /A new session was started via \/new or \/reset/i,
-  /Execute your Session Startup sequence now/i,
-  /(^|\n)\s*\/note\b/i,
-];
-
 // Queries that are clearly NOT memory-retrieval candidates
 const SKIP_PATTERNS = [
   // Greetings & pleasantries
@@ -77,9 +69,6 @@ function normalizeQuery(query: string): string {
  */
 export function shouldSkipRetrieval(query: string, minLength?: number): boolean {
   const trimmed = normalizeQuery(query);
-
-  // Control/system wrappers should always skip retrieval.
-  if (CONTROL_PROMPT_SKIP_PATTERNS.some(p => p.test(trimmed))) return true;
 
   // Force retrieve if query has memory-related intent (checked FIRST,
   // before length check, so short CJK queries like "你记得吗" aren't skipped)

@@ -1,44 +1,27 @@
 # Changelog
 
-## 1.1.0-beta.6
+## 1.1.0-beta.2 (Smart Memory Beta + Access Reinforcement)
 
-- Refactor: build reset/new reflection handoff note in `runMemoryReflection`.
-- Refactor: `<open-loops>` now comes from the fresh reflection run, while `<derived-focus>` comes from historical scored itemized derived rows.
-- Refactor: upgrade historical `<derived-focus>` ranking to Derived-Focus V2 (conservative strict/soft normalization, non-linear group scoring, diversity-aware shortlist up to 36 before final note injection capped at 13, with no hard `score > 0.3` gate).
-- Refactor: introduce a shared final set-wise top-k selector for generic Auto-Recall and dynamic Reflection-Recall, with deterministic output order and preserved reflection `kind + strictKey` partitioning.
-- Refactor: add a shared set-wise final selector implementation that can provide lexical-overlap suppression, embedding-based semantic near-duplicate suppression, deterministic ordering, and lexical-only fallback when vectors are missing/invalid.
-- Compatibility: generic Auto-Recall now exposes `autoRecallSelectionMode` (`legacy` default, `setwise-v2` opt-in); the enhanced lexical/semantic final-selection behavior is enabled only in `setwise-v2`. Reflection-Recall `fixed | dynamic` semantics remain unchanged.
-- Breaking: stop writing and stop reading legacy combined reflection rows (`type=memory-reflection`).
-- Docs: refresh README / README_CN for the new handoff-note behavior and remove old legacy combined guidance.
+This is a **beta** release published under the npm dist-tag **`beta`** (it does not affect the stable `latest` channel).
 
----
+Highlights:
+- **Smart Extraction (LLM-powered)**: 6-category extraction with L0/L1/L2 metadata (falls back to regex capture when disabled or init fails)
+- **Lifecycle scoring integrated into retrieval**: decay-based score adjustment + tier floors
+- **Tier transitions (best-effort)**: bounded metadata write-backs for top results (tier / access stats)
+- **Access reinforcement for time decay**: frequently *manually recalled* memories decay more slowly (spaced-repetition style)
+  - Adds `AccessTracker` with debounced metadata write-back (accessCount / lastAccessedAt)
+  - Adds retrieval config: `reinforcementFactor` (default: 0.5) and `maxHalfLifeMultiplier` (default: 3)
 
-## 1.1.0
-
-- Feat: add integrated self-improvement governance flow (`agent:bootstrap`, `command:new/reset`, governance tools, and `.learnings` file bootstrap).
-- Feat: add `memoryReflection` session strategy with inheritance/derived injection, reflection persistence, and dedicated reflection-agent support.
-- Fix: keep session-strategy compatibility by mapping legacy `sessionMemory.enabled` to `systemSessionMemory` / `none` and trimming reflection input toward recent conversation tail.
-- Fix: retry early transient upstream reflection failures once and broaden session recovery search paths to real OpenClaw agent session directories.
-- Docs: update README / README_CN for session strategy, self-improvement, memoryReflection, mdMirror, and reflection fallback behavior.
-- Tests: add targeted coverage for reflection retry classification and session recovery path resolution.
-
-PRs: #43, #2
+Notes:
+- Access reinforcement is gated to manual recall (`source: \"manual\"`) to avoid auto-recall strengthening noise.
 
 ---
 
-## 1.0.32
+## 1.1.0-beta.1 (Smart Memory Beta)
 
-- Fix: strip OpenClaw `Conversation info` / `Sender` metadata noise before auto-capture matching and adaptive retrieval normalization, reducing false captures and noisy retrieval triggers.
-- Fix: parse `autoRecallMinRepeated` from plugin config so repeated-memory suppression works when configured.
-
-PR: #50
+- Initial beta with Smart Extraction + lifecycle components (decay engine + tier manager)
 
 ---
-
-
-## 1.0.31
-
-- Fix: `memory-pro import` now preserves provided IDs and is idempotent (skips if ID already exists).
 
 ## 1.0.26
 
