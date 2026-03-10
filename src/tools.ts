@@ -664,7 +664,7 @@ export function registerMemoryStoreTool(
             content: [
               {
                 type: "text",
-                text: `Stored: "${text.slice(0, 100)}${text.length > 100 ? "..." : ""}" in scope '${targetScope}'`,
+                text: `Stored: "${text.slice(0, 100)}${text.length > 100 ? "..." : ""}" (ID: ${entry.id}) in scope '${targetScope}'`,
               },
             ],
             details: {
@@ -996,7 +996,7 @@ export function registerMemoryUpdateTool(
             content: [
               {
                 type: "text",
-                text: `Updated memory ${updated.id.slice(0, 8)}...: "${updated.text.slice(0, 80)}${updated.text.length > 80 ? "..." : ""}"`,
+                text: `Updated memory (ID: ${updated.id}): "${updated.text.slice(0, 80)}${updated.text.length > 80 ? "..." : ""}"`,
               },
             ],
             details: {
