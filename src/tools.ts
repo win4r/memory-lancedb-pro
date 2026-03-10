@@ -1199,6 +1199,107 @@ export function registerMemoryListTool(
 }
 
 // ============================================================================
+// Purge Scope Tool
+// ============================================================================
+
+export function registerMemoryPurgeScopeTool(
+  api: OpenClawPluginApi,
+  context: ToolContext,
+) {
+  api.registerTool(
+    (toolCtx) => {
+      const agentId = resolveAgentId((toolCtx as any)?.agentId, context.agentId) ?? "main";
+      return {
+        name: "memory_purge_scope",
+        label: "Memory Purge Scope",
+        description:
+          "Permanently delete ALL memories in a specific scope. This is a DESTRUCTIVE and IRREVERSIBLE operation. " +
+          "You must set confirm=true to execute. Use with extreme caution — typically for user/agent cleanup.",
+        parameters: Type.Object({
+          scope: Type.String({
+            description: "The scope to purge (e.g. 'agent:ent_user-xxx_default')",
+          }),
+          confirm: Type.Boolean({
+            description: "Must be true to execute. Safety guard against accidental purge.",
+          }),
+        }),
+        async execute(_toolCallId, params) {
+          const { scope, confirm } = params as {
+            scope: string;
+            confirm: boolean;
+          };
+
+          if (!confirm) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: "Purge aborted: confirm must be true to execute this destructive operation.",
+                },
+              ],
+              details: { error: "not_confirmed" },
+            };
+          }
+
+          if (!scope || !scope.trim()) {
+            return {
+              content: [
+                { type: "text", text: "Purge aborted: scope must be a non-empty string." },
+              ],
+              details: { error: "invalid_scope" },
+            };
+          }
+
+          // Access control: only allow purging scopes this agent can access
+          if (!context.scopeManager.isAccessible(scope, agentId)) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Access denied: scope "${scope}" is not accessible by agent "${agentId}".`,
+                },
+              ],
+              details: {
+                error: "scope_access_denied",
+                requestedScope: scope,
+                agentId,
+              },
+            };
+          }
+
+          try {
+            const deletedCount = await context.store.bulkDelete([scope]);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Purged scope "${scope}": ${deletedCount} memor${deletedCount === 1 ? "y" : "ies"} deleted.`,
+                },
+              ],
+              details: {
+                scope,
+                deletedCount,
+              },
+            };
+          } catch (error) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Failed to purge scope "${scope}": ${error instanceof Error ? error.message : String(error)}`,
+                },
+              ],
+              details: { error: "purge_failed", message: String(error) },
+            };
+          }
+        },
+      };
+    },
+    { name: "memory_purge_scope" },
+  );
+}
+
+// ============================================================================
 // Tool Registration Helper
 // ============================================================================
 
@@ -1220,6 +1321,7 @@ export function registerAllMemoryTools(
   if (options.enableManagementTools) {
     registerMemoryStatsTool(api, context);
     registerMemoryListTool(api, context);
+    registerMemoryPurgeScopeTool(api, context);
   }
   if (options.enableSelfImprovementTools !== false) {
     registerSelfImprovementLogTool(api, context);
