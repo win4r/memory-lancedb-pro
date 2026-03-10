@@ -205,6 +205,11 @@ function parsePositiveInt(value: unknown): number | undefined {
   return undefined;
 }
 
+function isLocalProvider(baseURL?: string): boolean {
+  if (!baseURL) return false;
+  return /localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0/i.test(baseURL);
+}
+
 function resolveHookAgentId(
   explicitAgentId: string | undefined,
   sessionKey: string | undefined,
@@ -3160,8 +3165,12 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     throw new Error("embedding config is required");
   }
 
+  const resolvedBaseURL =
+    typeof embedding.baseURL === "string" ? resolveEnvVars(embedding.baseURL) : undefined;
+  const isLocal = isLocalProvider(resolvedBaseURL);
+
   // Accept single key (string) or array of keys for round-robin rotation
-  let apiKey: string | string[];
+  let apiKey: string | string[] | undefined;
   if (typeof embedding.apiKey === "string") {
     apiKey = embedding.apiKey;
   } else if (Array.isArray(embedding.apiKey) && embedding.apiKey.length > 0) {
@@ -3183,7 +3192,16 @@ export function parsePluginConfig(value: unknown): PluginConfig {
   }
 
   if (!apiKey || (Array.isArray(apiKey) && apiKey.length === 0)) {
-    throw new Error("embedding.apiKey is required (set directly or via OPENAI_API_KEY env var)");
+    if (isLocal) {
+      apiKey = "ollama";
+      console.warn(
+        "[memory-lancedb-pro] No embedding.apiKey provided for local provider; using dummy key. This is expected for Ollama and similar local endpoints.",
+      );
+    } else {
+      throw new Error(
+        "embedding.apiKey is required for cloud providers (set directly or via OPENAI_API_KEY env var)",
+      );
+    }
   }
 
   const memoryReflectionRaw = typeof cfg.memoryReflection === "object" && cfg.memoryReflection !== null
