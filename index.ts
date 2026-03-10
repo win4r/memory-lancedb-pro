@@ -1322,7 +1322,7 @@ async function findPreviousSessionFile(
       );
       if (nonReset.length > 0) return join(sessionsDir, nonReset[0]);
     }
-  } catch {}
+  } catch { }
 }
 
 // ============================================================================
@@ -1334,16 +1334,26 @@ type AgentWorkspaceMap = Record<string, string>;
 function resolveAgentWorkspaceMap(api: OpenClawPluginApi): AgentWorkspaceMap {
   const map: AgentWorkspaceMap = {};
 
-  // Try api.config first (runtime config)
-  const agents = Array.isArray((api as any).config?.agents?.list)
-    ? (api as any).config.agents.list
-    : [];
+  const assignFromConfigRoot = (root: any) => {
+    const defaultWorkspace = typeof root?.agents?.defaults?.workspace === "string"
+      ? root.agents.defaults.workspace
+      : undefined;
+    const agents = Array.isArray(root?.agents?.list)
+      ? root.agents.list
+      : [];
 
-  for (const agent of agents) {
-    if (agent?.id && typeof agent.workspace === "string") {
-      map[String(agent.id)] = agent.workspace;
+    for (const agent of agents) {
+      if (!agent?.id) continue;
+      const explicitWorkspace = typeof agent.workspace === "string" ? agent.workspace : undefined;
+      const resolvedWorkspace = explicitWorkspace || defaultWorkspace;
+      if (resolvedWorkspace) {
+        map[String(agent.id)] = resolvedWorkspace;
+      }
     }
-  }
+  };
+
+  // Try api.config first (runtime config)
+  assignFromConfigRoot((api as any).config || {});
 
   // Fallback: read from openclaw.json (respect OPENCLAW_HOME if set)
   if (Object.keys(map).length === 0) {
@@ -1352,14 +1362,7 @@ function resolveAgentWorkspaceMap(api: OpenClawPluginApi): AgentWorkspaceMap {
       const configPath = join(openclawHome, "openclaw.json");
       const raw = readFileSync(configPath, "utf8");
       const parsed = JSON.parse(raw);
-      const list = parsed?.agents?.list;
-      if (Array.isArray(list)) {
-        for (const agent of list) {
-          if (agent?.id && typeof agent.workspace === "string") {
-            map[String(agent.id)] = agent.workspace;
-          }
-        }
-      }
+      assignFromConfigRoot(parsed || {});
     } catch {
       /* silent */
     }
@@ -1453,7 +1456,7 @@ const memoryLanceDBProPlugin = {
     } catch (err) {
       api.logger.warn(
         `memory-lancedb-pro: storage path issue — ${String(err)}\n` +
-          `  The plugin will still attempt to start, but writes may fail.`,
+        `  The plugin will still attempt to start, but writes may fail.`,
       );
     }
 
@@ -1490,6 +1493,7 @@ const memoryLanceDBProPlugin = {
 
     const scopeManager = createScopeManager(config.scopes);
     const migrator = createMigrator(store);
+    const agentWorkspaceMap = resolveAgentWorkspaceMap(api);
 
     const reflectionErrorStateBySession = new Map<string, ReflectionErrorState>();
     const reflectionByAgentCache = new Map<string, { updatedAt: number; invariants: string[]; derived: string[] }>();
@@ -1673,6 +1677,7 @@ const memoryLanceDBProPlugin = {
     // Default is OFF to prevent the model from accidentally echoing injected context.
     if (config.autoRecall === true) {
       api.on("before_agent_start", async (event, ctx) => {
+
         try {
           const agentId = ctx?.agentId || "main";
           const sessionId = ctx?.sessionId || "default";
@@ -2206,6 +2211,9 @@ const memoryLanceDBProPlugin = {
           const currentSessionId = typeof sessionEntry.sessionId === "string" ? sessionEntry.sessionId : "unknown";
           let currentSessionFile = typeof sessionEntry.sessionFile === "string" ? sessionEntry.sessionFile : undefined;
           const sourceAgentId = parseAgentIdFromSessionKey(sessionKey) || "main";
+          const sourceWorkspaceDir = agentWorkspaceMap[sourceAgentId] || workspaceDir;
+          const reflectionRunAgentId = resolveReflectionRunAgentId(cfg, sourceAgentId);
+          const reflectionWorkspaceDir = agentWorkspaceMap[reflectionRunAgentId] || sourceWorkspaceDir;
           const commandSource = typeof context.commandSource === "string" ? context.commandSource : "";
           const triggerKey = `${String(event?.action || "unknown")}|${sessionKey || "(none)"}|${currentSessionFile || currentSessionId || "unknown"}`;
           if (isDuplicateReflectionTrigger(triggerKey)) {
@@ -2222,7 +2230,7 @@ const memoryLanceDBProPlugin = {
             const searchDirs = resolveReflectionSessionSearchDirs({
               context,
               cfg,
-              workspaceDir,
+              workspaceDir: sourceWorkspaceDir,
               currentSessionFile,
               sourceAgentId,
             });
@@ -2245,7 +2253,7 @@ const memoryLanceDBProPlugin = {
             const searchDirs = resolveReflectionSessionSearchDirs({
               context,
               cfg,
-              workspaceDir,
+              workspaceDir: sourceWorkspaceDir,
               currentSessionFile,
               sourceAgentId,
             });
@@ -2269,7 +2277,6 @@ const memoryLanceDBProPlugin = {
           const timeIso = now.toISOString().split("T")[1].replace("Z", "");
           const timeHms = timeIso.split(".")[0];
           const timeCompact = timeIso.replace(/[:.]/g, "");
-          const reflectionRunAgentId = resolveReflectionRunAgentId(cfg, sourceAgentId);
           const targetScope = scopeManager.getDefaultScope(sourceAgentId);
           const toolErrorSignals = sessionKey
             ? (reflectionErrorStateBySession.get(sessionKey)?.entries ?? []).slice(-reflectionErrorReminderMaxEntries)
@@ -2283,7 +2290,7 @@ const memoryLanceDBProPlugin = {
             maxInputChars: reflectionMaxInputChars,
             cfg,
             agentId: reflectionRunAgentId,
-            workspaceDir,
+            workspaceDir: reflectionWorkspaceDir,
             timeoutMs: reflectionTimeoutMs,
             thinkLevel: reflectionThinkLevel,
             toolErrorSignals,
@@ -2351,7 +2358,7 @@ const memoryLanceDBProPlugin = {
           ].join("\n");
           const reflectionBody = `${header}${reflectionText.trim()}\n`;
 
-          const outDir = join(workspaceDir, "memory", "reflections", dateStr);
+          const outDir = join(sourceWorkspaceDir, "memory", "reflections", dateStr);
           await mkdir(outDir, { recursive: true });
           const agentToken = sanitizeFileToken(sourceAgentId, "agent");
           const sessionToken = sanitizeFileToken(currentSessionId || "unknown", "session");
@@ -2361,7 +2368,7 @@ const memoryLanceDBProPlugin = {
             const suffix = attempt === 0 ? "" : `-${Math.random().toString(36).slice(2, 8)}`;
             const fileName = `${timeCompact}-${agentToken}-${sessionToken}${suffix}.md`;
             const candidateRelPath = join("memory", "reflections", dateStr, fileName);
-            const candidateOutPath = join(workspaceDir, candidateRelPath);
+            const candidateOutPath = join(sourceWorkspaceDir, candidateRelPath);
             try {
               await writeFile(candidateOutPath, reflectionBody, { encoding: "utf-8", flag: "wx" });
               relPath = candidateRelPath;
@@ -2380,7 +2387,7 @@ const memoryLanceDBProPlugin = {
           if (config.selfImprovement?.enabled !== false && reflectionGovernanceCandidates.length > 0) {
             for (const candidate of reflectionGovernanceCandidates) {
               await appendSelfImprovementEntry({
-                baseDir: workspaceDir,
+                baseDir: sourceWorkspaceDir,
                 type: "learning",
                 summary: candidate.summary,
                 details: candidate.details,
@@ -2469,7 +2476,7 @@ const memoryLanceDBProPlugin = {
             }
           }
 
-          const dailyPath = join(workspaceDir, "memory", `${dateStr}.md`);
+          const dailyPath = join(sourceWorkspaceDir, "memory", `${dateStr}.md`);
           await ensureDailyLogFile(dailyPath, dateStr);
           await appendFile(dailyPath, `- [${timeHms} UTC] Reflection generated: \`${relPath}\`\n`, "utf-8");
 
@@ -2575,7 +2582,7 @@ const memoryLanceDBProPlugin = {
         if (files.length > 7) {
           const { unlink } = await import("node:fs/promises");
           for (const old of files.slice(0, files.length - 7)) {
-            await unlink(join(backupDir, old)).catch(() => {});
+            await unlink(join(backupDir, old)).catch(() => { });
           }
         }
 
@@ -2633,10 +2640,10 @@ const memoryLanceDBProPlugin = {
 
             api.logger.info(
               `memory-lancedb-pro: initialized successfully ` +
-                `(embedding: ${embedTest.success ? "OK" : "FAIL"}, ` +
-                `retrieval: ${retrievalTest.success ? "OK" : "FAIL"}, ` +
-                `mode: ${retrievalTest.mode}, ` +
-                `FTS: ${retrievalTest.hasFtsSupport ? "enabled" : "disabled"})`,
+              `(embedding: ${embedTest.success ? "OK" : "FAIL"}, ` +
+              `retrieval: ${retrievalTest.success ? "OK" : "FAIL"}, ` +
+              `mode: ${retrievalTest.mode}, ` +
+              `FTS: support=${retrievalTest.hasFtsSupport ? "yes" : "no"}, index=${retrievalTest.hasFtsIndex ? "yes" : "no"})`,
             );
 
             if (!embedTest.success) {
@@ -2741,9 +2748,9 @@ export function parsePluginConfig(value: unknown): PluginConfig {
       ? sessionStrategyRaw
       : legacySessionMemoryEnabled === true
         ? "systemSessionMemory"
-      : legacySessionMemoryEnabled === false
+        : legacySessionMemoryEnabled === false
           ? "none"
-      : "systemSessionMemory";
+          : "systemSessionMemory";
   const reflectionMessageCount = parsePositiveInt(memoryReflectionRaw?.messageCount ?? sessionMemoryRaw?.messageCount) ?? DEFAULT_REFLECTION_MESSAGE_COUNT;
   const injectModeRaw = memoryReflectionRaw?.injectMode;
   const reflectionInjectMode: ReflectionInjectMode =
@@ -2897,26 +2904,26 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     sessionMemory:
       typeof cfg.sessionMemory === "object" && cfg.sessionMemory !== null
         ? {
-            enabled:
-              (cfg.sessionMemory as Record<string, unknown>).enabled !== false,
-            messageCount:
-              typeof (cfg.sessionMemory as Record<string, unknown>)
-                .messageCount === "number"
-                ? ((cfg.sessionMemory as Record<string, unknown>)
-                    .messageCount as number)
-                : undefined,
-          }
+          enabled:
+            (cfg.sessionMemory as Record<string, unknown>).enabled !== false,
+          messageCount:
+            typeof (cfg.sessionMemory as Record<string, unknown>)
+              .messageCount === "number"
+              ? ((cfg.sessionMemory as Record<string, unknown>)
+                .messageCount as number)
+              : undefined,
+        }
         : undefined,
     mdMirror:
       typeof cfg.mdMirror === "object" && cfg.mdMirror !== null
         ? {
-            enabled:
-              (cfg.mdMirror as Record<string, unknown>).enabled === true,
-            dir:
-              typeof (cfg.mdMirror as Record<string, unknown>).dir === "string"
-                ? ((cfg.mdMirror as Record<string, unknown>).dir as string)
-                : undefined,
-          }
+          enabled:
+            (cfg.mdMirror as Record<string, unknown>).enabled === true,
+          dir:
+            typeof (cfg.mdMirror as Record<string, unknown>).dir === "string"
+              ? ((cfg.mdMirror as Record<string, unknown>).dir as string)
+              : undefined,
+        }
         : undefined,
   };
 }

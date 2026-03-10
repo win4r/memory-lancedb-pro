@@ -35,7 +35,7 @@
     ]
   },
   "scripts": {
-    "test": "node test/vllm-provider.test.mjs && node test/embedder-error-hints.test.mjs && node test/migrate-legacy-schema.test.mjs && node test/update-consistency-lancedb.test.mjs && node test/cli-smoke.mjs && node --test test/memory-reflection.test.mjs test/self-improvement.test.mjs"
+    "test": "node --test --test-name-pattern='.' test/access-tracker.test.mjs test/config-session-strategy-migration.test.mjs test/embedder-error-hints.test.mjs test/jsonl-distill-slash-filter.test.mjs test/memory-reflection.test.mjs test/migrate-legacy-schema.test.mjs test/query-expander.test.mjs test/retriever-trace.test.mjs test/self-improvement.test.mjs test/session-recovery-paths.test.mjs test/update-consistency-lancedb.test.mjs test/vector-search-cosine.test.mjs test/vllm-provider.test.mjs && node test/cli-smoke.mjs"
   },
   "devDependencies": {
     "commander": "^14.0.0",

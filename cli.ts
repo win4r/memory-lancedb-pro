@@ -5,7 +5,11 @@
 import type { Command } from "commander";
 import { readFileSync } from "node:fs";
 import { loadLanceDB, type MemoryEntry, type MemoryStore } from "./src/store.js";
-import type { MemoryRetriever } from "./src/retriever.js";
+import type {
+  MemoryRetriever,
+  RetrievalExecution,
+  RetrievalTrace,
+} from "./src/retriever.js";
 import type { MemoryScopeManager } from "./src/scopes.js";
 import type { MemoryMigrator } from "./src/migrate.js";
 
@@ -51,6 +55,53 @@ function formatMemory(memory: any, index?: number): string {
 
 function formatJson(obj: any): string {
   return JSON.stringify(obj, null, 2);
+}
+
+function formatTrace(trace: RetrievalTrace): string {
+  const header = [
+    `mode=${trace.mode}`,
+    `source=${trace.source}`,
+    `limit=${trace.limit}`,
+    `results=${trace.resultCount}`,
+    `elapsed=${trace.totalElapsedMs}ms`,
+  ].join(" ");
+  const stages = trace.stages.map((stage) => {
+    const meta = stage.metadata ? ` ${JSON.stringify(stage.metadata)}` : "";
+    return `  - ${stage.name}: ${stage.inputCount} -> ${stage.outputCount} in ${stage.elapsedMs}ms${meta}`;
+  });
+  return [`Trace: ${header}`, ...stages].join("\n");
+}
+
+function formatSearchResults(execution: RetrievalExecution, debug: boolean): string {
+  const { results, trace } = execution;
+  if (results.length === 0) {
+    return debug ? `No relevant memories found.\n\n${formatTrace(trace)}` : "No relevant memories found.";
+  }
+
+  const lines = results.map((result, i) => {
+    const sources = [];
+    if (result.sources.vector) sources.push("vector");
+    if (result.sources.bm25) sources.push("BM25");
+    if (result.sources.reranked) sources.push("reranked");
+
+    let line =
+      `${i + 1}. [${result.entry.id}] [${result.entry.category}:${result.entry.scope}] ${result.entry.text} ` +
+      `(${(result.score * 100).toFixed(0)}%, ${sources.join("+")})`;
+
+    // Per-result score trail (debug only)
+    if (debug && result.scoreHistory && result.scoreHistory.length > 0) {
+      const trail = result.scoreHistory
+        .map((s) => `${s.stage}=${(s.score * 100).toFixed(0)}%`)
+        .join(" → ");
+      line += `\n   scores: ${trail}`;
+    }
+
+    return line;
+  });
+
+  return debug
+    ? `Found ${results.length} memories:\n\n${lines.join("\n")}\n\n${formatTrace(trace)}`
+    : `Found ${results.length} memories:\n\n${lines.join("\n")}`;
 }
 
 // ============================================================================
@@ -121,6 +172,7 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
     .option("--scope <scope>", "Search within specific scope")
     .option("--category <category>", "Filter by category")
     .option("--limit <n>", "Maximum number of results", "10")
+    .option("--debug", "Include retrieval trace details")
     .option("--json", "Output as JSON")
     .action(async (query, options) => {
       try {
@@ -131,32 +183,18 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
           scopeFilter = [options.scope];
         }
 
-        const results = await context.retriever.retrieve({
+        const execution = await context.retriever.retrieveWithTrace({
           query,
           limit,
           scopeFilter,
           category: options.category,
+          source: "cli",
         });
 
         if (options.json) {
-          console.log(formatJson(results));
+          console.log(formatJson(options.debug ? execution : execution.results));
         } else {
-          if (results.length === 0) {
-            console.log("No relevant memories found.");
-          } else {
-            console.log(`Found ${results.length} memories:\n`);
-            results.forEach((result, i) => {
-              const sources = [];
-              if (result.sources.vector) sources.push("vector");
-              if (result.sources.bm25) sources.push("BM25");
-              if (result.sources.reranked) sources.push("reranked");
-
-              console.log(
-                `${i + 1}. [${result.entry.id}] [${result.entry.category}:${result.entry.scope}] ${result.entry.text} ` +
-                `(${(result.score * 100).toFixed(0)}%, ${sources.join('+')})`
-              );
-            });
-          }
+          console.log(formatSearchResults(execution, options.debug === true));
         }
       } catch (error) {
         console.error("Search failed:", error);
@@ -180,13 +218,18 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         const stats = await context.store.stats(scopeFilter);
         const scopeStats = context.scopeManager.getStats();
         const retrievalConfig = context.retriever.getConfig();
+        const retrievalTelemetry = context.retriever.getTelemetry();
+        const ftsStatus = context.store.getFtsStatus();
 
         const summary = {
           memory: stats,
           scopes: scopeStats,
           retrieval: {
             mode: retrievalConfig.mode,
-            hasFtsSupport: context.store.hasFtsSupport,
+            hasFtsSupport: ftsStatus.supported,
+            ftsIndexExists: ftsStatus.indexExists,
+            lastFtsError: ftsStatus.lastError,
+            telemetry: retrievalTelemetry,
           },
         };
 
@@ -197,7 +240,15 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
           console.log(`• Total memories: ${stats.totalCount}`);
           console.log(`• Available scopes: ${scopeStats.totalScopes}`);
           console.log(`• Retrieval mode: ${retrievalConfig.mode}`);
-          console.log(`• FTS support: ${context.store.hasFtsSupport ? 'Yes' : 'No'}`);
+          console.log(`• FTS support: ${ftsStatus.supported ? 'Yes' : 'No'}`);
+          console.log(`• FTS index: ${ftsStatus.indexExists ? 'Yes' : 'No'}`);
+          if (ftsStatus.lastError) {
+            console.log(`• FTS last error: ${ftsStatus.lastError}`);
+          }
+          console.log(`• Recall requests: ${retrievalTelemetry.totalRequests}`);
+          console.log(`• Recall skipped: ${retrievalTelemetry.skippedRequests}`);
+          console.log(`• Avg recall latency: ${retrievalTelemetry.averageLatencyMs}ms`);
+          console.log(`• Avg results per recall: ${retrievalTelemetry.averageResults}`);
           console.log();
 
           console.log("Memories by scope:");
@@ -210,9 +261,105 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
           Object.entries(stats.categoryCounts).forEach(([category, count]) => {
             console.log(`  • ${category}: ${count}`);
           });
+          console.log();
+
+          console.log("Retrieval telemetry:");
+          console.log(`  • Zero-result requests: ${retrievalTelemetry.zeroResultRequests}`);
+          console.log(`  • Result source breakdown: vector=${retrievalTelemetry.sourceBreakdown.vectorOnly}, bm25=${retrievalTelemetry.sourceBreakdown.bm25Only}, hybrid=${retrievalTelemetry.sourceBreakdown.hybrid}, reranked=${retrievalTelemetry.sourceBreakdown.reranked}`);
         }
       } catch (error) {
         console.error("Failed to get statistics:", error);
+        process.exit(1);
+      }
+    });
+
+  // Reindex FTS
+  memory
+    .command("reindex-fts")
+    .description("Rebuild the FTS (full-text search) index for BM25 retrieval")
+    .action(async () => {
+      try {
+        const ftsStatusBefore = context.store.getFtsStatus();
+        console.log(`FTS status before: supported=${ftsStatusBefore.supported}, indexExists=${ftsStatusBefore.indexExists}, lastError=${ftsStatusBefore.lastError || 'none'}`);
+        console.log("Rebuilding FTS index...");
+
+        const result = await context.store.rebuildFtsIndex();
+
+        if (result.success) {
+          console.log("✔ FTS index rebuilt successfully.");
+          const ftsStatusAfter = context.store.getFtsStatus();
+          console.log(`FTS status after: supported=${ftsStatusAfter.supported}, indexExists=${ftsStatusAfter.indexExists}`);
+        } else {
+          console.error(`✘ FTS index rebuild failed: ${result.error}`);
+          process.exit(1);
+        }
+      } catch (error) {
+        console.error("Reindex failed:", error);
+        process.exit(1);
+      }
+    });
+
+  // Benchmark
+  memory
+    .command("benchmark")
+    .description("Run retrieval benchmark against fixed query fixtures")
+    .option("--json", "Output full JSON report")
+    .option("--jsonl", "Output one JSON line per query")
+    .option("--fixtures <path>", "Path to custom fixtures file")
+    .option("--strict", "Exit with code 2 if any gate fixtures fail")
+    .action(async (options) => {
+      try {
+        const { resolve } = await import("path");
+        const { fileURLToPath } = await import("url");
+
+        // Resolve fixture path: --fixtures flag > default location
+        let fixturesPath: string;
+        if (options.fixtures) {
+          fixturesPath = resolve(options.fixtures);
+        } else {
+          // Try import.meta.url-relative, then __dirname fallback
+          try {
+            const selfDir = fileURLToPath(new URL(".", import.meta.url));
+            fixturesPath = resolve(selfDir, "test/benchmark-fixtures.json");
+          } catch {
+            fixturesPath = resolve(__dirname, "test/benchmark-fixtures.json");
+          }
+        }
+
+        // Load & validate fixtures using shared core
+        const { loadFixtures, runBenchmark, formatBenchmarkText } = await import("./src/benchmark.js") as typeof import("./src/benchmark.js");
+
+        let fixtures;
+        try {
+          fixtures = loadFixtures(fixturesPath);
+        } catch (err) {
+          console.error(`Fixture loading failed: ${err instanceof Error ? err.message : err}`);
+          process.exit(1);
+        }
+
+        console.error(`Fixtures loaded: ${fixtures.length} from ${fixturesPath}`);
+
+        // Run benchmark using shared core
+        const report = await runBenchmark(context.retriever, fixtures, fixturesPath);
+
+        // Output
+        if (options.json) {
+          console.log(JSON.stringify(report, null, 2));
+        } else if (options.jsonl) {
+          for (const entry of report.results) {
+            console.log(JSON.stringify(entry));
+          }
+        } else {
+          console.log(formatBenchmarkText(report));
+        }
+
+        // Exit code
+        if (options.strict && report.summary.gateFail > 0) {
+          console.error(`\n✘ ${report.summary.gateFail} gate fixture(s) failed. Exiting with code 2.`);
+          process.exit(2);
+        }
+      } catch (error) {
+        console.error("Benchmark failed:", error);
         process.exit(1);
       }
     });
@@ -371,6 +518,13 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
 
         const targetScope = options.scope || context.scopeManager.getDefaultScope();
 
+        // Pre-load existing texts for exact-match dedupe (once, not per-entry)
+        const existing = await context.store.list([targetScope], undefined, 5000);
+        if (existing.length >= 5000) {
+          console.warn("Warning: existing memory count reached 5000 limit; text-based deduplication may miss entries beyond this limit.");
+        }
+        const existingTexts = new Set(existing.map(m => m.text.trim()));
+
         for (const memory of data.memories) {
           try {
             const text = memory.text;
@@ -382,10 +536,10 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
             const categoryRaw = memory.category;
             const category: MemoryEntry["category"] =
               categoryRaw === "preference" ||
-              categoryRaw === "fact" ||
-              categoryRaw === "decision" ||
-              categoryRaw === "entity" ||
-              categoryRaw === "other"
+                categoryRaw === "fact" ||
+                categoryRaw === "decision" ||
+                categoryRaw === "entity" ||
+                categoryRaw === "other"
                 ? categoryRaw
                 : "other";
 
@@ -415,19 +569,35 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
             }
 
             // Back-compat dedupe: if no id provided, do a best-effort similarity check.
+            // Uses store.vectorSearch() directly to avoid triggering rerank (which may 422).
             if (!id) {
-              const existing = await context.retriever.retrieve({
-                query: text,
-                limit: 1,
-                scopeFilter: [targetScope],
-              });
-              if (existing.length > 0 && existing[0].score > 0.95) {
+              // Cheap path: exact text match via pre-loaded text set
+              if (existingTexts.has(text.trim())) {
                 skipped++;
                 continue;
               }
             }
 
             const vector = await context.embedder.embedPassage(text);
+
+            // Vector similarity dedupe (bypasses rerank pipeline entirely)
+            if (!id) {
+              try {
+                const similar = await context.store.vectorSearch(
+                  vector,
+                  1,
+                  0.1,
+                  [targetScope],
+                );
+                if (similar.length > 0 && similar[0].score > 0.95) {
+                  skipped++;
+                  continue;
+                }
+              } catch (dedupeErr) {
+                // Fail-open: dedupe must never block a legitimate import
+                console.warn(`Dedupe check failed, continuing import: ${dedupeErr}`);
+              }
+            }
 
             if (id) {
               await context.store.importEntry({
@@ -451,6 +621,7 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
               });
             }
 
+            existingTexts.add(text.trim());
             imported++;
           } catch (error) {
             console.warn(`Failed to import memory: ${error}`);
@@ -496,10 +667,10 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         let targetReal = context.store.dbPath;
         try {
           sourceReal = await fs.realpath(sourceDbPath);
-        } catch {}
+        } catch { }
         try {
           targetReal = await fs.realpath(context.store.dbPath);
-        } catch {}
+        } catch { }
 
         if (!force && sourceReal === targetReal) {
           console.error("Refusing to re-embed in-place: source-db equals target dbPath. Use a new dbPath or pass --force.");
