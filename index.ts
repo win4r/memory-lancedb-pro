@@ -1287,16 +1287,26 @@ type AgentWorkspaceMap = Record<string, string>;
 function resolveAgentWorkspaceMap(api: OpenClawPluginApi): AgentWorkspaceMap {
   const map: AgentWorkspaceMap = {};
 
-  // Try api.config first (runtime config)
-  const agents = Array.isArray((api as any).config?.agents?.list)
-    ? (api as any).config.agents.list
-    : [];
+  const assignFromConfigRoot = (root: any) => {
+    const defaultWorkspace = typeof root?.agents?.defaults?.workspace === "string"
+      ? root.agents.defaults.workspace
+      : undefined;
+    const agents = Array.isArray(root?.agents?.list)
+      ? root.agents.list
+      : [];
 
-  for (const agent of agents) {
-    if (agent?.id && typeof agent.workspace === "string") {
-      map[String(agent.id)] = agent.workspace;
+    for (const agent of agents) {
+      if (!agent?.id) continue;
+      const explicitWorkspace = typeof agent.workspace === "string" ? agent.workspace : undefined;
+      const resolvedWorkspace = explicitWorkspace || defaultWorkspace;
+      if (resolvedWorkspace) {
+        map[String(agent.id)] = resolvedWorkspace;
+      }
     }
-  }
+  };
+
+  // Try api.config first (runtime config)
+  assignFromConfigRoot((api as any).config || {});
 
   // Fallback: read from openclaw.json (respect OPENCLAW_HOME if set)
   if (Object.keys(map).length === 0) {
@@ -1305,14 +1315,7 @@ function resolveAgentWorkspaceMap(api: OpenClawPluginApi): AgentWorkspaceMap {
       const configPath = join(openclawHome, "openclaw.json");
       const raw = readFileSync(configPath, "utf8");
       const parsed = JSON.parse(raw);
-      const list = parsed?.agents?.list;
-      if (Array.isArray(list)) {
-        for (const agent of list) {
-          if (agent?.id && typeof agent.workspace === "string") {
-            map[String(agent.id)] = agent.workspace;
-          }
-        }
-      }
+      assignFromConfigRoot(parsed || {});
     } catch {
       /* silent */
     }
@@ -1448,6 +1451,7 @@ const memoryLanceDBProPlugin = {
     );
     const scopeManager = createScopeManager(config.scopes);
     const migrator = createMigrator(store);
+    const agentWorkspaceMap = resolveAgentWorkspaceMap(api);
 
     // Initialize smart extraction
     let smartExtractor: SmartExtractor | null = null;
@@ -2307,6 +2311,9 @@ const memoryLanceDBProPlugin = {
           const currentSessionId = typeof sessionEntry.sessionId === "string" ? sessionEntry.sessionId : "unknown";
           let currentSessionFile = typeof sessionEntry.sessionFile === "string" ? sessionEntry.sessionFile : undefined;
           const sourceAgentId = parseAgentIdFromSessionKey(sessionKey) || "main";
+          const sourceWorkspaceDir = agentWorkspaceMap[sourceAgentId] || workspaceDir;
+          const reflectionRunAgentId = resolveReflectionRunAgentId(cfg, sourceAgentId);
+          const reflectionWorkspaceDir = agentWorkspaceMap[reflectionRunAgentId] || sourceWorkspaceDir;
           const commandSource = typeof context.commandSource === "string" ? context.commandSource : "";
           api.logger.info(
             `memory-reflection: command:${action} hook start; sessionKey=${sessionKey || "(none)"}; source=${commandSource || "(unknown)"}; sessionId=${currentSessionId}; sessionFile=${currentSessionFile || "(none)"}`
@@ -2316,7 +2323,7 @@ const memoryLanceDBProPlugin = {
             const searchDirs = resolveReflectionSessionSearchDirs({
               context,
               cfg,
-              workspaceDir,
+              workspaceDir: sourceWorkspaceDir,
               currentSessionFile,
               sourceAgentId,
             });
@@ -2339,7 +2346,7 @@ const memoryLanceDBProPlugin = {
             const searchDirs = resolveReflectionSessionSearchDirs({
               context,
               cfg,
-              workspaceDir,
+              workspaceDir: sourceWorkspaceDir,
               currentSessionFile,
               sourceAgentId,
             });
@@ -2363,7 +2370,6 @@ const memoryLanceDBProPlugin = {
           const timeIso = now.toISOString().split("T")[1].replace("Z", "");
           const timeHms = timeIso.split(".")[0];
           const timeCompact = timeIso.replace(/[:.]/g, "");
-          const reflectionRunAgentId = resolveReflectionRunAgentId(cfg, sourceAgentId);
           const targetScope = scopeManager.getDefaultScope(sourceAgentId);
           const toolErrorSignals = sessionKey
             ? (reflectionErrorStateBySession.get(sessionKey)?.entries ?? []).slice(-reflectionErrorReminderMaxEntries)
@@ -2377,7 +2383,7 @@ const memoryLanceDBProPlugin = {
             maxInputChars: reflectionMaxInputChars,
             cfg,
             agentId: reflectionRunAgentId,
-            workspaceDir,
+            workspaceDir: reflectionWorkspaceDir,
             timeoutMs: reflectionTimeoutMs,
             thinkLevel: reflectionThinkLevel,
             toolErrorSignals,
@@ -2410,7 +2416,7 @@ const memoryLanceDBProPlugin = {
           ].join("\n");
           const reflectionBody = `${header}${reflectionText.trim()}\n`;
 
-          const outDir = join(workspaceDir, "memory", "reflections", dateStr);
+          const outDir = join(sourceWorkspaceDir, "memory", "reflections", dateStr);
           await mkdir(outDir, { recursive: true });
           const agentToken = sanitizeFileToken(sourceAgentId, "agent");
           const sessionToken = sanitizeFileToken(currentSessionId || "unknown", "session");
@@ -2420,7 +2426,7 @@ const memoryLanceDBProPlugin = {
             const suffix = attempt === 0 ? "" : `-${Math.random().toString(36).slice(2, 8)}`;
             const fileName = `${timeCompact}-${agentToken}-${sessionToken}${suffix}.md`;
             const candidateRelPath = join("memory", "reflections", dateStr, fileName);
-            const candidateOutPath = join(workspaceDir, candidateRelPath);
+            const candidateOutPath = join(sourceWorkspaceDir, candidateRelPath);
             try {
               await writeFile(candidateOutPath, reflectionBody, { encoding: "utf-8", flag: "wx" });
               relPath = candidateRelPath;
@@ -2439,7 +2445,7 @@ const memoryLanceDBProPlugin = {
           if (config.selfImprovement?.enabled !== false && reflectionGovernanceCandidates.length > 0) {
             for (const candidate of reflectionGovernanceCandidates) {
               await appendSelfImprovementEntry({
-                baseDir: workspaceDir,
+                baseDir: sourceWorkspaceDir,
                 type: "learning",
                 summary: candidate.summary,
                 details: candidate.details,
@@ -2559,7 +2565,7 @@ const memoryLanceDBProPlugin = {
             reflectionDerivedBySession.delete(sessionKey);
           }
 
-          const dailyPath = join(workspaceDir, "memory", `${dateStr}.md`);
+          const dailyPath = join(sourceWorkspaceDir, "memory", `${dateStr}.md`);
           await ensureDailyLogFile(dailyPath, dateStr);
           await appendFile(dailyPath, `- [${timeHms} UTC] Reflection generated: \`${relPath}\`\n`, "utf-8");
 
