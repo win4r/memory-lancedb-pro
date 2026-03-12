@@ -19,6 +19,13 @@ export interface ScopeConfig {
 }
 
 export interface ScopeManager {
+  /**
+   * Enumerate known scopes for the caller.
+   *
+   * Note: this is an enumeration API, not a full description of every syntactically-valid built-in
+   * pattern accepted by `validateScope()` / `isAccessible()`. In particular, bypass callers may still
+   * validate built-in scope patterns that are not explicitly registered in `definitions`.
+   */
   getAccessibleScopes(agentId?: string): string[];
   /**
    * Optional store-layer filter hook.
@@ -132,6 +139,7 @@ export class MemoryScopeManager implements ScopeManager {
   getAccessibleScopes(agentId?: string): string[] {
     if (isSystemBypassId(agentId) || !agentId) {
       // Keep enumeration semantics consistent for callers that inspect the list.
+      // This enumerates registered scopes, not every valid built-in pattern.
       return this.getAllScopes();
     }
 
@@ -240,6 +248,9 @@ export class MemoryScopeManager implements ScopeManager {
     if (!agentId || typeof agentId !== "string") {
       throw new Error("Invalid agent ID");
     }
+
+    // Note: an agent's own reflection scope is still auto-granted by getAccessibleScopes().
+    // This setter can add access, but it does not revoke `reflection:agent:${agentId}`.
 
     // Validate all scopes
     for (const scope of scopes) {
