@@ -399,6 +399,8 @@ export function resolveScopeFilter(
   if (typeof scopeManager.getScopeFilter === "function") {
     return scopeManager.getScopeFilter(agentId);
   }
+  // Legacy/custom managers without getScopeFilter fall back to enumeration semantics.
+  // They should not use `[]` as an implicit bypass marker for system identifiers.
   return scopeManager.getAccessibleScopes(agentId);
 }
 

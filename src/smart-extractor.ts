@@ -62,7 +62,12 @@ export interface SmartExtractorConfig {
 export interface ExtractPersistOptions {
   /** Target scope for newly created memories. */
   scope?: string;
-  /** Scopes visible to the current agent for dedup/merge. */
+  /**
+   * Optional store-layer scope filter override used for dedup/merge reads.
+   * - omit the field to default reads to `[scope ?? defaultScope]`
+   * - set `undefined` explicitly to preserve trusted full-bypass callers
+   * - pass `[]` or a non-empty array to forward that exact filter unchanged
+   */
   scopeFilter?: string[];
 }
 

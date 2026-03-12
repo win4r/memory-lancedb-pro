@@ -17,9 +17,15 @@ const jiti = jitiFactory(import.meta.url, {
 
 const pluginModule = jiti("../index.ts");
 const memoryLanceDBProPlugin = pluginModule.default || pluginModule;
+const { MemoryStore } = jiti("../src/store.ts");
+const { storeReflectionToLanceDB } = jiti("../src/reflection-store.ts");
+
+const EMBEDDING_DIMENSIONS = 4;
+const FIXED_VECTOR = [0.5, 0.5, 0.5, 0.5];
 
 function createPluginApiHarness({ pluginConfig, resolveRoot }) {
   const eventHandlers = new Map();
+  const logs = [];
 
   const api = {
     pluginConfig,
@@ -29,10 +35,18 @@ function createPluginApiHarness({ pluginConfig, resolveRoot }) {
       return path.join(resolveRoot, target);
     },
     logger: {
-      info() {},
-      warn() {},
-      debug() {},
-      error() {},
+      info(message) {
+        logs.push(["info", String(message)]);
+      },
+      warn(message) {
+        logs.push(["warn", String(message)]);
+      },
+      debug(message) {
+        logs.push(["debug", String(message)]);
+      },
+      error(message) {
+        logs.push(["error", String(message)]);
+      },
     },
     registerTool() {},
     registerCli() {},
@@ -45,7 +59,69 @@ function createPluginApiHarness({ pluginConfig, resolveRoot }) {
     registerHook() {},
   };
 
-  return { api, eventHandlers };
+  return { api, eventHandlers, logs };
+}
+
+function makePluginConfig(workDir) {
+  return {
+    dbPath: path.join(workDir, "db"),
+    embedding: {
+      apiKey: "test-api-key",
+      dimensions: EMBEDDING_DIMENSIONS,
+    },
+    sessionStrategy: "memoryReflection",
+    smartExtraction: false,
+    autoCapture: false,
+    autoRecall: false,
+    selfImprovement: { enabled: false, beforeResetNote: false, ensureLearningFiles: false },
+  };
+}
+
+async function seedReflection(dbPath, agentId) {
+  const store = new MemoryStore({ dbPath, vectorDim: EMBEDDING_DIMENSIONS });
+  await storeReflectionToLanceDB({
+    reflectionText: [
+      "## Invariants",
+      `- Always verify reflection hook coverage for ${agentId}.`,
+      "## Derived",
+      `- Next run exercise the reflection injection path for ${agentId}.`,
+    ].join("\n"),
+    sessionKey: `agent:${agentId}:session:test`,
+    sessionId: `session-${agentId}`,
+    agentId,
+    command: "command:new",
+    scope: "global",
+    toolErrorSignals: [],
+    runAt: Date.UTC(2026, 2, 12, 15, 0, 0),
+    usedFallback: false,
+    embedPassage: async () => FIXED_VECTOR,
+    vectorSearch: async () => [],
+    store: async (entry) => store.store(entry),
+  });
+}
+
+async function invokeReflectionHooks({ workDir, agentId }) {
+  const pluginConfig = makePluginConfig(workDir);
+  await seedReflection(pluginConfig.dbPath, agentId);
+
+  const harness = createPluginApiHarness({
+    resolveRoot: workDir,
+    pluginConfig,
+  });
+
+  memoryLanceDBProPlugin.register(harness.api);
+
+  const startHooks = harness.eventHandlers.get("before_agent_start") || [];
+  const promptHooks = harness.eventHandlers.get("before_prompt_build") || [];
+
+  assert.equal(startHooks.length, 1, "expected exactly one before_agent_start hook");
+  assert.equal(promptHooks.length, 1, "expected exactly one before_prompt_build hook");
+
+  const ctx = { sessionKey: `agent:${agentId}:test`, agentId };
+  const startResult = await startHooks[0].handler({}, ctx);
+  const promptResult = await promptHooks[0].handler({}, ctx);
+
+  return { harness, startResult, promptResult };
 }
 
 describe("reflection hooks tolerate bypass scope filters", () => {
@@ -60,39 +136,38 @@ describe("reflection hooks tolerate bypass scope filters", () => {
   });
 
   ["system", "undefined"].forEach((reservedAgentId) => {
-    it(`does not throw when before_agent_start/before_prompt_build run with agentId=${reservedAgentId}`, async () => {
-      const harness = createPluginApiHarness({
-        resolveRoot: workDir,
-        pluginConfig: {
-          dbPath: path.join(workDir, "db"),
-          embedding: { apiKey: "test-api-key" },
-          sessionStrategy: "memoryReflection",
-          smartExtraction: false,
-          autoCapture: false,
-          autoRecall: false,
-          selfImprovement: { enabled: false, beforeResetNote: false, ensureLearningFiles: false },
-        },
+    it(`injects inherited and derived reflection context for bypass agentId=${reservedAgentId}`, async () => {
+      const { harness, startResult, promptResult } = await invokeReflectionHooks({
+        workDir,
+        agentId: reservedAgentId,
       });
 
-      memoryLanceDBProPlugin.register(harness.api);
-
-      const startHooks = harness.eventHandlers.get("before_agent_start") || [];
-      const promptHooks = harness.eventHandlers.get("before_prompt_build") || [];
-
-      assert.ok(startHooks.length >= 1, "expected before_agent_start hooks");
-      assert.ok(promptHooks.length >= 1, "expected before_prompt_build hooks");
-
-      for (const { handler } of startHooks) {
-        await assert.doesNotReject(async () => {
-          await handler({}, { sessionKey: `agent:${reservedAgentId}:test`, agentId: reservedAgentId });
-        });
-      }
-
-      for (const { handler } of promptHooks) {
-        await assert.doesNotReject(async () => {
-          await handler({}, { sessionKey: `agent:${reservedAgentId}:test`, agentId: reservedAgentId });
-        });
-      }
+      assert.match(startResult?.prependContext || "", /<inherited-rules>/);
+      assert.match(startResult?.prependContext || "", new RegExp(`Always verify reflection hook coverage for ${reservedAgentId}\\.`));
+      assert.match(promptResult?.prependContext || "", /<derived-focus>/);
+      assert.match(promptResult?.prependContext || "", new RegExp(`Next run exercise the reflection injection path for ${reservedAgentId}\\.`));
+      assert.deepStrictEqual(
+        harness.logs.filter(([level]) => level === "warn"),
+        [],
+        "hooks should not fall back to swallowed warning paths",
+      );
     });
+  });
+
+  it("injects reflection context for a normal non-bypass agent id", async () => {
+    const { harness, startResult, promptResult } = await invokeReflectionHooks({
+      workDir,
+      agentId: "main",
+    });
+
+    assert.match(startResult?.prependContext || "", /<inherited-rules>/);
+    assert.match(startResult?.prependContext || "", /Always verify reflection hook coverage for main\./);
+    assert.match(promptResult?.prependContext || "", /<derived-focus>/);
+    assert.match(promptResult?.prependContext || "", /Next run exercise the reflection injection path for main\./);
+    assert.deepStrictEqual(
+      harness.logs.filter(([level]) => level === "warn"),
+      [],
+      "normal-agent hooks should not emit warning fallbacks",
+    );
   });
 });
