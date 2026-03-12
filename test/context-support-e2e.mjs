@@ -177,46 +177,71 @@ async function runTest() {
         console.log("  ✅ support decision works correctly");
 
         // ----------------------------------------------------------------
-        // Scenario 2: contextualize — should create linked entry
+        // Scenario 2: merge — should update support_info on merged memory
         // ----------------------------------------------------------------
-        console.log("Test 2: contextualize decision creates linked entry...");
-        dedupDecision = "contextualize";
-        dedupContextLabel = "night";
+        console.log("Test 2: merge decision updates support_info...");
+        dedupDecision = "merge";
+        dedupContextLabel = "late_night";
         logs.length = 0;
 
         const stats2 = await extractor.extractAndPersist(
-            "用户说晚上改喝花茶。",
+            "用户再次确认深夜也会喝乌龙茶。",
             "test-session",
             { scope: "test", scopeFilter: ["test"] },
         );
 
         const entries2 = await store.list(["test"], undefined, 10, 0);
-        assert.equal(entries2.length, 2, "contextualize should create 1 new entry");
-        assert.equal(stats2.created, 1, "created count should be 1");
-        console.log("  ✅ contextualize decision works correctly");
+        assert.equal(entries2.length, 1, "merge should NOT create new entry");
+        assert.equal(stats2.merged, 1, "merged count should be 1");
+
+        const meta2 = JSON.parse(entries2[0].metadata || "{}");
+        const si2 = parseSupportInfo(meta2.support_info);
+        const lateNightSlice = si2.slices.find(s => s.context === "late_night");
+        assert.ok(lateNightSlice, "late_night slice should exist after merge");
+        assert.equal(lateNightSlice.confirmations, 1, "late_night confirmations should be 1");
+        console.log("  ✅ merge decision works correctly");
 
         // ----------------------------------------------------------------
-        // Scenario 3: contradict — should record contradiction + new entry
+        // Scenario 3: contextualize — should create linked entry
         // ----------------------------------------------------------------
-        console.log("Test 3: contradict decision records contradiction...");
-        dedupDecision = "contradict";
-        dedupContextLabel = "weekend";
+        console.log("Test 3: contextualize decision creates linked entry...");
+        dedupDecision = "contextualize";
+        dedupContextLabel = "night";
         logs.length = 0;
 
         const stats3 = await extractor.extractAndPersist(
-            "用户说周末不喝茶了。",
+            "用户说晚上改喝花茶。",
             "test-session",
             { scope: "test", scopeFilter: ["test"] },
         );
 
         const entries3 = await store.list(["test"], undefined, 10, 0);
-        assert.equal(entries3.length, 3, "contradict should create 1 new entry");
+        assert.equal(entries3.length, 2, "contextualize should create 1 new entry");
         assert.equal(stats3.created, 1, "created count should be 1");
+        console.log("  ✅ contextualize decision works correctly");
+
+        // ----------------------------------------------------------------
+        // Scenario 4: contradict — should record contradiction + new entry
+        // ----------------------------------------------------------------
+        console.log("Test 4: contradict decision records contradiction...");
+        dedupDecision = "contradict";
+        dedupContextLabel = "weekend";
+        logs.length = 0;
+
+        const stats4 = await extractor.extractAndPersist(
+            "用户说周末不喝茶了。",
+            "test-session",
+            { scope: "test", scopeFilter: ["test"] },
+        );
+
+        const entries4 = await store.list(["test"], undefined, 10, 0);
+        assert.equal(entries4.length, 3, "contradict should create 1 new entry");
+        assert.equal(stats4.created, 1, "created count should be 1");
 
         // Check contradictions recorded on some existing entry
         // (with constant vectors, dedup may match any existing entry)
         let foundWeekend = false;
-        for (const entry of entries3) {
+        for (const entry of entries4) {
             const meta = JSON.parse(entry.metadata || "{}");
             const si = parseSupportInfo(meta.support_info);
             const weekendSlice = si.slices.find(s => s.context === "weekend");

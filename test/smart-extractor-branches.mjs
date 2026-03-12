@@ -19,8 +19,14 @@ const plugin = jiti("../index.ts");
 const { MemoryStore } = jiti("../src/store.ts");
 const { createEmbedder } = jiti("../src/embedder.ts");
 const { buildSmartMetadata, stringifySmartMetadata } = jiti("../src/smart-metadata.ts");
+const { NoisePrototypeBank } = jiti("../src/noise-prototypes.ts");
 
 const EMBEDDING_DIMENSIONS = 2560;
+
+// This suite exercises extraction/dedup/merge branch behavior rather than
+// the embedding-based noise filter. Force the noise bank off so deterministic
+// mock embeddings do not accidentally classify normal user text as noise.
+NoisePrototypeBank.prototype.isNoise = () => false;
 
 function createDeterministicEmbedding(text, dimensions = EMBEDDING_DIMENSIONS) {
   void text;
