@@ -3,7 +3,7 @@
   "version": "1.1.0-beta.5",
   "description": "OpenClaw enhanced LanceDB memory plugin with hybrid retrieval (Vector + BM25), cross-encoder rerank, multi-scope isolation, long-context chunking, and management CLI",
   "type": "module",
-  "main": "index.ts",
+  "main": "dist/index.js",
   "keywords": [
     "openclaw",
     "openclaw-plugin",
@@ -25,23 +25,26 @@
   "author": "win4r",
   "license": "MIT",
   "dependencies": {
-    "@lancedb/lancedb": "^0.26.2",
-    "@sinclair/typebox": "0.34.48",
-    "openai": "^6.21.0"
+    "@lancedb/lancedb": "^0.26.2"
   },
   "openclaw": {
     "extensions": [
-      "./index.ts"
+      "./dist/index.js"
     ]
   },
   "scripts": {
     "test": "node test/embedder-error-hints.test.mjs && node test/migrate-legacy-schema.test.mjs && node --test test/config-session-strategy-migration.test.mjs && node --test test/recall-text-cleanup.test.mjs && node test/update-consistency-lancedb.test.mjs && node test/cli-smoke.mjs && node test/functional-e2e.mjs && node test/retriever-rerank-regression.mjs && node test/smart-memory-lifecycle.mjs && node test/smart-extractor-branches.mjs && node test/plugin-manifest-regression.mjs && node --test test/sync-plugin-version.test.mjs && node test/smart-metadata-v2.mjs && node test/vector-search-cosine.test.mjs && node test/context-support-e2e.mjs",
     "test:openclaw-host": "node test/openclaw-host-functional.mjs",
+    "build": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:@lancedb/lancedb --external:openclaw && esbuild cli.ts --bundle --platform=node --format=esm --outfile=dist/cli.js --external:@lancedb/lancedb --external:openclaw",
+    "prepare": "npm run build",
     "version": "node scripts/sync-plugin-version.mjs openclaw.plugin.json package.json && git add openclaw.plugin.json"
   },
   "devDependencies": {
+    "@sinclair/typebox": "0.34.48",
     "commander": "^14.0.0",
+    "esbuild": "^0.25.0",
     "jiti": "^2.6.0",
+    "openai": "^6.21.0",
     "typescript": "^5.9.3"
   }
 }

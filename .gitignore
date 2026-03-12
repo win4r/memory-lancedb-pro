@@ -1,4 +1,5 @@
 node_modules/
+dist/
 .venv-skill-tools
 memory-plugin-feature-dev
 memory-plugin-host-validation
