@@ -49,6 +49,7 @@ const SCOPE_PATTERNS = {
   GLOBAL: "global",
   AGENT: (agentId: string) => `agent:${agentId}`,
   CUSTOM: (name: string) => `custom:${name}`,
+  REFLECTION: (agentId: string) => `reflection:agent:${agentId}`,
   PROJECT: (projectId: string) => `project:${projectId}`,
   USER: (userId: string) => `user:${userId}`,
 };
@@ -105,14 +106,21 @@ export class MemoryScopeManager implements ScopeManager {
       scope.startsWith("agent:") ||
       scope.startsWith("custom:") ||
       scope.startsWith("project:") ||
-      scope.startsWith("user:")
+      scope.startsWith("user:") ||
+      scope.startsWith("reflection:")
     );
   }
 
   getAccessibleScopes(agentId?: string): string[] {
-    if (!agentId) {
-      // No agent specified, return all scopes
-      return this.getAllScopes();
+    /**
+     * SECURITY NOTE: "undefined" and "system" are treated as administrative bypass identifiers.
+     * These should only be passed by internal gateway tasks (reflection, compaction).
+     * ENSURE that external API controllers sanitize/intercept these identifiers to prevent
+     * unauthorized privilege escalation from external requests.
+     */
+    if (!agentId || agentId === "undefined" || agentId === "system") {
+      // No agent specified, bypass scope filter for admin/system calls
+      return [];
     }
 
     // Check explicit agent access configuration
@@ -121,20 +129,26 @@ export class MemoryScopeManager implements ScopeManager {
       return explicitAccess;
     }
 
-    // Default access: global + agent-specific scope
+    // Default access: global + agent-specific scope + agent-reflection scope
     const defaultScopes = ["global"];
     const agentScope = SCOPE_PATTERNS.AGENT(agentId);
+    const reflectionScope = SCOPE_PATTERNS.REFLECTION(agentId);
 
     // Only include agent scope if it already exists — don't mutate config as a side effect
     if (this.config.definitions[agentScope] || this.isBuiltInScope(agentScope)) {
       defaultScopes.push(agentScope);
     }
 
+    // Include reflection scope
+    if (this.config.definitions[reflectionScope] || this.isBuiltInScope(reflectionScope)) {
+      defaultScopes.push(reflectionScope);
+    }
+
     return defaultScopes;
   }
 
   getDefaultScope(agentId?: string): string {
-    if (!agentId) {
+    if (!agentId || agentId === "undefined" || agentId === "system") {
       return this.config.default;
     }
 
@@ -150,7 +164,7 @@ export class MemoryScopeManager implements ScopeManager {
   }
 
   isAccessible(scope: string, agentId?: string): boolean {
-    if (!agentId) {
+    if (!agentId || agentId === "undefined" || agentId === "system") {
       // No agent specified, allow access to all valid scopes
       return this.validateScope(scope);
     }
@@ -302,7 +316,9 @@ export class MemoryScopeManager implements ScopeManager {
         scopesByType.custom++;
       } else if (scope.startsWith("project:")) {
         scopesByType.project++;
-      } else if (scope.startsWith("user:")) {
+      } else if (scope.startsWith("user:") || scope.startsWith("reflection:")) {
+        // reflection: scopes are categorized as user/system for stat aggregation 
+        // to prevent dashboard schema errors. Verified safe (not used for billing).
         scopesByType.user++;
       } else {
         scopesByType.other++;
