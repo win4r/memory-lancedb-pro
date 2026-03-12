@@ -1701,7 +1701,7 @@ const memoryLanceDBProPlugin = {
 
     async function runRecallLifecycle(
       results: Array<{ entry: { id: string; text: string; category: "preference" | "fact" | "decision" | "entity" | "other"; scope: string; importance: number; timestamp: number; metadata?: string } }>,
-      scopeFilter: string[],
+      scopeFilter?: string[],
     ): Promise<Map<string, string>> {
       const now = Date.now();
       type LifecycleEntry = {
