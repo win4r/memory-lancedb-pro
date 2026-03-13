@@ -2086,12 +2086,20 @@ const memoryLanceDBProPlugin = {
     if (config.autoCapture !== false) {
       api.on("agent_end", async (event, ctx) => {
         if (!event.success || !event.messages || event.messages.length === 0) {
+          api.logger.info(
+            `memory-lancedb-pro: auto-capture skipped: ${!event.success ? "agent did not succeed" : "no messages in event"}`,
+          );
           return;
         }
 
+        const agentId = resolveHookAgentId(ctx?.agentId, (event as any).sessionKey);
+        let captureOutcome = "unknown";
+        let dupSkipped = 0;
+        let stored = 0;
+        let captureEligibleCount = 0;
+        let captureTextCount = 0;
+
         try {
-          // Determine agent ID and default scope
-          const agentId = resolveHookAgentId(ctx?.agentId, (event as any).sessionKey);
           const accessibleScopes = scopeManager.getAccessibleScopes(agentId);
           const defaultScope = scopeManager.getDefaultScope(agentId);
           const sessionKey = ctx?.sessionKey || (event as any).sessionKey || "unknown";
@@ -2152,6 +2160,7 @@ const memoryLanceDBProPlugin = {
             }
           }
 
+          captureEligibleCount = eligibleTexts.length;
           const conversationKey = buildAutoCaptureConversationKeyFromSessionKey(sessionKey);
           const pendingIngressTexts = conversationKey
             ? [...(autoCapturePendingIngressTexts.get(conversationKey) || [])]
@@ -2204,10 +2213,12 @@ const memoryLanceDBProPlugin = {
           api.logger.debug(
             `memory-lancedb-pro: auto-capture collected ${texts.length} text(s) for agent ${agentId} (minMessages=${minMessages}, smartExtraction=${smartExtractor ? "on" : "off"})`,
           );
+          captureTextCount = texts.length;
           if (texts.length === 0) {
-            api.logger.debug(
+            api.logger.info(
               `memory-lancedb-pro: auto-capture found no eligible texts after filtering for agent ${agentId}`,
             );
+            captureOutcome = "no-eligible-texts";
             return;
           }
           if (texts.length > 0) {
@@ -2223,9 +2234,10 @@ const memoryLanceDBProPlugin = {
             // Pre-filter: embedding-based noise detection (language-agnostic)
             const cleanTexts = await smartExtractor.filterNoiseByEmbedding(texts);
             if (cleanTexts.length === 0) {
-              api.logger.debug(
+              api.logger.info(
                 `memory-lancedb-pro: all texts filtered as embedding noise for agent ${agentId}`,
               );
+              captureOutcome = "embedding-noise-filtered";
               return;
             }
             if (cleanTexts.length >= minMessages) {
@@ -2241,6 +2253,8 @@ const memoryLanceDBProPlugin = {
                 api.logger.info(
                   `memory-lancedb-pro: smart-extracted ${stats.created} created, ${stats.merged} merged, ${stats.skipped} skipped for agent ${agentId}`
                 );
+                captureOutcome = "smart-extracted";
+                stored = stats.created + stats.merged;
                 return; // Smart extraction handled everything
               }
 
@@ -2248,7 +2262,7 @@ const memoryLanceDBProPlugin = {
                 `memory-lancedb-pro: smart extraction produced no persisted memories for agent ${agentId} (created=${stats.created}, merged=${stats.merged}, skipped=${stats.skipped}); falling back to regex capture`,
               );
             } else {
-              api.logger.debug(
+              api.logger.info(
                 `memory-lancedb-pro: auto-capture skipped smart extraction for agent ${agentId} (${cleanTexts.length} < ${minMessages})`,
               );
             }
@@ -2271,6 +2285,7 @@ const memoryLanceDBProPlugin = {
             api.logger.info(
               `memory-lancedb-pro: regex fallback found 0 capturable texts for agent ${agentId}`,
             );
+            captureOutcome = "regex-no-match";
             return;
           }
 
@@ -2279,7 +2294,6 @@ const memoryLanceDBProPlugin = {
           );
 
           // Store each capturable piece (limit to 3 per conversation)
-          let stored = 0;
           for (const text of toCapture.slice(0, 3)) {
             const category = detectCategory(text);
             const vector = await embedder.embedPassage(text);
@@ -2298,6 +2312,10 @@ const memoryLanceDBProPlugin = {
             }
 
             if (existing.length > 0 && existing[0].score > 0.95) {
+              api.logger.debug(
+                `memory-lancedb-pro: auto-capture skipped duplicate (similarity=${existing[0].score.toFixed(3)}) for agent ${agentId}`,
+              );
+              dupSkipped++;
               continue;
             }
 
@@ -2338,9 +2356,17 @@ const memoryLanceDBProPlugin = {
             api.logger.info(
               `memory-lancedb-pro: auto-captured ${stored} memories for agent ${agentId} in scope ${defaultScope}`,
             );
+            captureOutcome = "regex-captured";
+          } else {
+            captureOutcome = "regex-all-duplicates";
           }
         } catch (err) {
+          captureOutcome = "error";
           api.logger.warn(`memory-lancedb-pro: capture failed: ${String(err)}`);
+        } finally {
+          api.logger.info(
+            `memory-lancedb-pro: auto-capture pipeline result for agent ${agentId}: outcome=${captureOutcome}, messages=${event.messages.length}, eligible=${captureEligibleCount}, texts=${captureTextCount}, stored=${stored}${dupSkipped > 0 ? `, dupSkipped=${dupSkipped}` : ""}`,
+          );
         }
       });
     }
