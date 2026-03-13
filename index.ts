@@ -17,7 +17,7 @@ import { spawn } from "node:child_process";
 import { MemoryStore, validateStoragePath } from "./src/store.js";
 import { createEmbedder, getVectorDimensions } from "./src/embedder.js";
 import { createRetriever, DEFAULT_RETRIEVAL_CONFIG } from "./src/retriever.js";
-import { createScopeManager, resolveScopeFilter } from "./src/scopes.js";
+import { createScopeManager, resolveScopeFilter, isSystemBypassId } from "./src/scopes.js";
 import { createMigrator } from "./src/migrate.js";
 import { registerAllMemoryTools } from "./src/tools.js";
 import { appendSelfImprovementEntry, ensureSelfImprovementLearningFiles } from "./src/self-improvement-files.js";
@@ -547,8 +547,8 @@ function parseAgentIdFromSessionKey(sessionKey: string | undefined): string | un
   if (parts.length >= 2 && parts[0] === "agent" && parts[1]) {
     const candidate = parts[1];
     // Block reserved bypass IDs ("system", "undefined") from session key extraction.
-    // Prevents agent:undefined:... or agent:system:... from reaching bypass semantics.
-    if (candidate === "system" || candidate === "undefined") {
+    // Uses centralized isSystemBypassId from scopes.ts to stay in sync.
+    if (isSystemBypassId(candidate)) {
       return undefined;
     }
     return candidate;

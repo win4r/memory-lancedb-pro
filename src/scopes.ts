@@ -71,8 +71,13 @@ const SCOPE_PATTERNS = {
 const SYSTEM_BYPASS_IDS = new Set(["system", "undefined"]);
 const warnedLegacyFallbackBypassIds = new Set<string>();
 
-function isSystemBypassId(agentId?: string): boolean {
+export function isSystemBypassId(agentId?: string): boolean {
   return typeof agentId === "string" && SYSTEM_BYPASS_IDS.has(agentId);
+}
+
+/** @internal Exported for testing only — resets the legacy warning throttle. */
+export function _resetLegacyFallbackWarningState(): void {
+  warnedLegacyFallbackBypassIds.clear();
 }
 
 function withOwnReflectionScope(scopes: string[], agentId: string): string[] {
