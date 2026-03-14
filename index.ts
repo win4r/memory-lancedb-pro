@@ -3391,7 +3391,7 @@ export function parsePluginConfig(value: unknown): PluginConfig {
           agent: asNonEmptyString((cfg.layer3Fallback as Record<string, unknown>).agent) ?? "notebooklm",
           notebook: asNonEmptyString((cfg.layer3Fallback as Record<string, unknown>).notebook) ?? "memory-archive",
           notebookId: asNonEmptyString((cfg.layer3Fallback as Record<string, unknown>).notebookId),
-          timeout: parsePositiveInt((cfg.layer3Fallback as Record<string, unknown>).timeout) ?? 90,
+          timeout: parsePositiveInt((cfg.layer3Fallback as Record<string, unknown>).timeout) ?? 45,
           triggers: (() => {
             const triggers = (cfg.layer3Fallback as Record<string, unknown>).triggers;
             if (!triggers || typeof triggers !== "object" || Array.isArray(triggers)) return undefined;
