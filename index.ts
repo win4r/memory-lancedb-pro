@@ -1844,12 +1844,16 @@ const memoryLanceDBProPlugin = {
     };
 
     const loadAgentReflectionSlices = async (agentId: string, scopeFilter?: string[]) => {
-      const scopeKey = Array.isArray(scopeFilter) ? [...scopeFilter].sort().join(",") : "ALL";
+      const scopeKey = Array.isArray(scopeFilter)
+        ? `scopes:${[...scopeFilter].sort().join(",")}`
+        : "<NO_SCOPE_FILTER>";
       const cacheKey = `${agentId}::${scopeKey}`;
       const cached = reflectionByAgentCache.get(cacheKey);
       if (cached && Date.now() - cached.updatedAt < 15_000) return cached;
 
-      const entries = await store.list(scopeFilter, undefined, 120, 0);
+      // Reflection rows are already category-tagged, so keep bypass semantics explicit
+      // while avoiding a full-table read when scopeFilter is undefined.
+      const entries = await store.list(scopeFilter, "reflection", 240, 0);
       const { invariants, derived } = loadAgentReflectionSlicesFromEntries({
         entries,
         agentId,

@@ -95,7 +95,7 @@ export function parseAgentIdFromSessionKey(sessionKey: string | undefined): stri
   if (!sk.startsWith("agent:")) return undefined;
   const rest = sk.slice("agent:".length);
   const colonIdx = rest.indexOf(":");
-  const candidate = colonIdx === -1 ? rest : rest.slice(0, colonIdx);
+  const candidate = (colonIdx === -1 ? rest : rest.slice(0, colonIdx)).trim();
   if (!candidate || isSystemBypassId(candidate)) {
     return undefined;
   }

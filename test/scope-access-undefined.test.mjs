@@ -54,6 +54,12 @@ describe("MemoryScopeManager - System & Reflection Scopes", () => {
       assert.deepStrictEqual(manager.getScopeFilter(undefined), manager.getAllScopes());
     });
 
+    it("rejects whitespace-padded reserved bypass ids extracted from session keys", () => {
+      const { parseAgentIdFromSessionKey } = jiti("../src/scopes.ts");
+      assert.strictEqual(parseAgentIdFromSessionKey("agent: system :discord:channel:1"), undefined);
+      assert.strictEqual(parseAgentIdFromSessionKey("agent: undefined :discord:channel:1"), undefined);
+    });
+
     it("rejects explicit ACL configuration for reserved bypass identifiers", () => {
       assert.throws(() => manager.setAgentAccess("system", ["global"]), /Reserved bypass agent ID/);
       assert.throws(() => manager.setAgentAccess("undefined", ["global"]), /Reserved bypass agent ID/);
