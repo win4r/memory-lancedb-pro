@@ -1,4 +1,8 @@
-import type { MemoryCategory, MemoryTier } from "./memory-categories.js";
+import {
+  TEMPORAL_VERSIONED_CATEGORIES,
+  type MemoryCategory,
+  type MemoryTier,
+} from "./memory-categories.js";
 import type { DecayableMemory } from "./decay-engine.js";
 
 type LegacyStoreCategory =
@@ -17,6 +21,11 @@ type EntryLike = {
   metadata?: string;
 };
 
+export interface MemoryRelation {
+  type: string;
+  targetId: string;
+}
+
 export interface SmartMemoryMetadata {
   l0_abstract: string;
   l1_overview: string;
@@ -26,6 +35,12 @@ export interface SmartMemoryMetadata {
   access_count: number;
   confidence: number;
   last_accessed_at: number;
+  valid_from: number;
+  invalidated_at?: number;
+  fact_key?: string;
+  supersedes?: string;
+  superseded_by?: string;
+  relations?: MemoryRelation[];
   source_session?: string;
   [key: string]: unknown;
 }
@@ -97,6 +112,57 @@ function normalizeText(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function normalizeOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeTimestamp(value: unknown, fallback: number): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.floor(n);
+}
+
+function normalizeOptionalTimestamp(value: unknown): number | undefined {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return Math.floor(n);
+}
+
+export function deriveFactKey(
+  category: MemoryCategory,
+  abstract: string,
+): string | undefined {
+  if (!TEMPORAL_VERSIONED_CATEGORIES.has(category)) return undefined;
+
+  const trimmed = abstract.trim();
+  if (!trimmed) return undefined;
+
+  let topic = trimmed;
+  const colonMatch = trimmed.match(/^(.{1,120}?)[：:]/);
+  const arrowMatch = trimmed.match(/^(.{1,120}?)(?:\s*->|\s*=>)/);
+  if (colonMatch?.[1]) {
+    topic = colonMatch[1];
+  } else if (arrowMatch?.[1]) {
+    topic = arrowMatch[1];
+  }
+
+  const normalized = topic
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[。.!?]+$/g, "")
+    .trim();
+
+  return normalized ? `${category}:${normalized}` : undefined;
+}
+
+export function isMemoryActiveAt(
+  metadata: Pick<SmartMemoryMetadata, "valid_from" | "invalidated_at">,
+  at = Date.now(),
+): boolean {
+  if (metadata.valid_from > at) return false;
+  return !metadata.invalidated_at || metadata.invalidated_at > at;
+}
+
 export function parseSmartMetadata(
   rawMetadata: string | undefined,
   entry: EntryLike = {},
@@ -122,6 +188,8 @@ export function parseSmartMetadata(
   const memoryCategory = reverseMapLegacyCategory(entry.category, text);
   const l0 = normalizeText(parsed.l0_abstract, text);
   const l2 = normalizeText(parsed.l2_content, text);
+  const validFrom = normalizeTimestamp(parsed.valid_from, timestamp);
+  const invalidatedAt = normalizeOptionalTimestamp(parsed.invalidated_at);
   const normalized: SmartMemoryMetadata = {
     ...parsed,
     l0_abstract: l0,
@@ -135,6 +203,19 @@ export function parseSmartMetadata(
     access_count: clampCount(parsed.access_count, 0),
     confidence: clamp01(parsed.confidence, 0.7),
     last_accessed_at: clampCount(parsed.last_accessed_at, timestamp),
+    valid_from: validFrom,
+    invalidated_at:
+      invalidatedAt && invalidatedAt >= validFrom ? invalidatedAt : undefined,
+    fact_key:
+      normalizeOptionalString(parsed.fact_key) ??
+      deriveFactKey(
+        typeof parsed.memory_category === "string"
+          ? (parsed.memory_category as MemoryCategory)
+          : memoryCategory,
+        l0,
+      ),
+    supersedes: normalizeOptionalString(parsed.supersedes),
+    superseded_by: normalizeOptionalString(parsed.superseded_by),
     source_session:
       typeof parsed.source_session === "string" ? parsed.source_session : undefined,
   };
@@ -147,16 +228,23 @@ export function buildSmartMetadata(
   patch: Partial<SmartMemoryMetadata> = {},
 ): SmartMemoryMetadata {
   const base = parseSmartMetadata(entry.metadata, entry);
+  const l0Abstract = normalizeText(patch.l0_abstract, base.l0_abstract);
+  const nextCategory =
+    typeof patch.memory_category === "string"
+      ? patch.memory_category
+      : base.memory_category;
+  const validFrom = normalizeTimestamp(patch.valid_from, base.valid_from);
+  const invalidatedAt =
+    patch.invalidated_at === undefined
+      ? base.invalidated_at
+      : normalizeOptionalTimestamp(patch.invalidated_at);
   return {
     ...base,
     ...patch,
-    l0_abstract: normalizeText(patch.l0_abstract, base.l0_abstract),
+    l0_abstract: l0Abstract,
     l1_overview: normalizeText(patch.l1_overview, base.l1_overview),
     l2_content: normalizeText(patch.l2_content, base.l2_content),
-    memory_category:
-      typeof patch.memory_category === "string"
-        ? patch.memory_category
-        : base.memory_category,
+    memory_category: nextCategory,
     tier: normalizeTier(patch.tier ?? base.tier),
     access_count: clampCount(patch.access_count, base.access_count),
     confidence: clamp01(patch.confidence, base.confidence),
@@ -164,6 +252,21 @@ export function buildSmartMetadata(
       patch.last_accessed_at,
       base.last_accessed_at || entry.timestamp || Date.now(),
     ),
+    valid_from: validFrom,
+    invalidated_at:
+      invalidatedAt && invalidatedAt >= validFrom ? invalidatedAt : undefined,
+    fact_key:
+      normalizeOptionalString(patch.fact_key) ??
+      base.fact_key ??
+      deriveFactKey(nextCategory, l0Abstract),
+    supersedes:
+      patch.supersedes === undefined
+        ? base.supersedes
+        : normalizeOptionalString(patch.supersedes),
+    superseded_by:
+      patch.superseded_by === undefined
+        ? base.superseded_by
+        : normalizeOptionalString(patch.superseded_by),
     source_session:
       typeof patch.source_session === "string"
         ? patch.source_session
@@ -175,6 +278,30 @@ export function buildSmartMetadata(
 const MAX_SOURCES = 20;
 const MAX_HISTORY = 50;
 const MAX_RELATIONS = 16;
+
+/**
+ * Append a relation to an existing relations array, deduplicating by type+targetId.
+ */
+export function appendRelation(
+  existing: unknown,
+  relation: MemoryRelation,
+): MemoryRelation[] {
+  const rows = Array.isArray(existing)
+    ? existing.filter(
+      (item): item is MemoryRelation =>
+        !!item &&
+        typeof item === "object" &&
+        typeof (item as { type?: unknown }).type === "string" &&
+        typeof (item as { targetId?: unknown }).targetId === "string",
+    )
+    : [];
+
+  if (rows.some((item) => item.type === relation.type && item.targetId === relation.targetId)) {
+    return rows;
+  }
+
+  return [...rows, relation];
+}
 
 export function stringifySmartMetadata(
   metadata: SmartMemoryMetadata | Record<string, unknown>,

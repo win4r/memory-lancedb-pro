@@ -90,6 +90,27 @@ export function sanitizeReflectionSliceLines(lines: string[]): string[] {
     .filter((line) => !isPlaceholderReflectionSliceLine(line));
 }
 
+const INJECTABLE_REFLECTION_BLOCK_PATTERNS: RegExp[] = [
+  /^\s*(?:(?:next|this)\s+run\s+)?(?:ignore|disregard|forget|override|bypass)\b[\s\S]{0,80}\b(?:instructions?|guardrails?|policy|developer|system)\b/i,
+  /\b(?:reveal|print|dump|show|output)\b[\s\S]{0,80}\b(?:system prompt|developer prompt|hidden prompt|hidden instructions?|full prompt|prompt verbatim|secrets?|keys?|tokens?)\b/i,
+  /<\s*\/?\s*(?:system|assistant|user|tool|developer|inherited-rules|derived-focus)\b[^>]*>/i,
+  /^(?:system|assistant|user|developer|tool)\s*:/i,
+];
+
+export function isUnsafeInjectableReflectionLine(line: string): boolean {
+  const normalized = normalizeReflectionSliceLine(line);
+  if (!normalized) return true;
+  return INJECTABLE_REFLECTION_BLOCK_PATTERNS.some((pattern) =>
+    pattern.test(normalized),
+  );
+}
+
+export function sanitizeInjectableReflectionLines(lines: string[]): string[] {
+  return sanitizeReflectionSliceLines(lines).filter(
+    (line) => !isUnsafeInjectableReflectionLine(line),
+  );
+}
+
 function isInvariantRuleLike(line: string): boolean {
   return /^(always|never|when\b|if\b|before\b|after\b|prefer\b|avoid\b|require\b|only\b|do not\b|must\b|should\b)/i.test(line) ||
     /\b(must|should|never|always|prefer|avoid|required?)\b/i.test(line);
@@ -172,7 +193,10 @@ export function extractReflectionMappedMemories(reflectionText: string): Reflect
   return extractReflectionMappedMemoryItems(reflectionText).map(({ text, category, heading }) => ({ text, category, heading }));
 }
 
-export function extractReflectionMappedMemoryItems(reflectionText: string): ReflectionMappedMemoryItem[] {
+function extractReflectionMappedMemoryItemsWithSanitizer(
+  reflectionText: string,
+  sanitizeLines: (lines: string[]) => string[],
+): ReflectionMappedMemoryItem[] {
   const mappedSections: Array<{
     heading: string;
     category: "preference" | "fact" | "decision";
@@ -201,30 +225,45 @@ export function extractReflectionMappedMemoryItems(reflectionText: string): Refl
   ];
 
   return mappedSections.flatMap(({ heading, category, mappedKind }) => {
-    const lines = sanitizeReflectionSliceLines(parseSectionBullets(reflectionText, heading));
+    const lines = sanitizeLines(parseSectionBullets(reflectionText, heading));
     const groupSize = lines.length;
     return lines.map((text, ordinal) => ({ text, category, heading, mappedKind, ordinal, groupSize }));
   });
 }
 
-export function extractReflectionSlices(reflectionText: string): ReflectionSlices {
+export function extractReflectionMappedMemoryItems(reflectionText: string): ReflectionMappedMemoryItem[] {
+  return extractReflectionMappedMemoryItemsWithSanitizer(reflectionText, sanitizeReflectionSliceLines);
+}
+
+export function extractInjectableReflectionMappedMemoryItems(reflectionText: string): ReflectionMappedMemoryItem[] {
+  return extractReflectionMappedMemoryItemsWithSanitizer(reflectionText, sanitizeInjectableReflectionLines);
+}
+
+export function extractInjectableReflectionMappedMemories(reflectionText: string): ReflectionMappedMemory[] {
+  return extractInjectableReflectionMappedMemoryItems(reflectionText).map(({ text, category, heading }) => ({ text, category, heading }));
+}
+
+function extractReflectionSlicesWithSanitizer(
+  reflectionText: string,
+  sanitizeLines: (lines: string[]) => string[],
+): ReflectionSlices {
   const invariantSection = parseSectionBullets(reflectionText, "Invariants");
   const derivedSection = parseSectionBullets(reflectionText, "Derived");
   const mergedSection = parseSectionBullets(reflectionText, "Invariants & Reflections");
 
-  const invariantsPrimary = sanitizeReflectionSliceLines(invariantSection).filter(isInvariantRuleLike);
-  const derivedPrimary = sanitizeReflectionSliceLines(derivedSection).filter(isDerivedDeltaLike);
+  const invariantsPrimary = sanitizeLines(invariantSection).filter(isInvariantRuleLike);
+  const derivedPrimary = sanitizeLines(derivedSection).filter(isDerivedDeltaLike);
 
-  const invariantLinesLegacy = sanitizeReflectionSliceLines(
+  const invariantLinesLegacy = sanitizeLines(
     mergedSection.filter((line) => /invariant|stable|policy|rule/i.test(line))
   ).filter(isInvariantRuleLike);
-  const reflectionLinesLegacy = sanitizeReflectionSliceLines(
+  const reflectionLinesLegacy = sanitizeLines(
     mergedSection.filter((line) => /reflect|inherit|derive|change|apply/i.test(line))
   ).filter(isDerivedDeltaLike);
-  const openLoopLines = sanitizeReflectionSliceLines(parseSectionBullets(reflectionText, "Open loops / next actions"))
+  const openLoopLines = sanitizeLines(parseSectionBullets(reflectionText, "Open loops / next actions"))
     .filter(isOpenLoopAction)
     .filter(isDerivedDeltaLike);
-  const durableDecisionLines = sanitizeReflectionSliceLines(parseSectionBullets(reflectionText, "Decisions (durable)"))
+  const durableDecisionLines = sanitizeLines(parseSectionBullets(reflectionText, "Decisions (durable)"))
     .filter(isInvariantRuleLike);
 
   const invariants = invariantsPrimary.length > 0
@@ -240,8 +279,15 @@ export function extractReflectionSlices(reflectionText: string): ReflectionSlice
   };
 }
 
-export function extractReflectionSliceItems(reflectionText: string): ReflectionSliceItem[] {
-  const slices = extractReflectionSlices(reflectionText);
+export function extractReflectionSlices(reflectionText: string): ReflectionSlices {
+  return extractReflectionSlicesWithSanitizer(reflectionText, sanitizeReflectionSliceLines);
+}
+
+export function extractInjectableReflectionSlices(reflectionText: string): ReflectionSlices {
+  return extractReflectionSlicesWithSanitizer(reflectionText, sanitizeInjectableReflectionLines);
+}
+
+function buildReflectionSliceItemsFromSlices(slices: ReflectionSlices): ReflectionSliceItem[] {
   const invariantGroupSize = slices.invariants.length;
   const derivedGroupSize = slices.derived.length;
 
@@ -261,4 +307,12 @@ export function extractReflectionSliceItems(reflectionText: string): ReflectionS
   }));
 
   return [...invariantItems, ...derivedItems];
+}
+
+export function extractReflectionSliceItems(reflectionText: string): ReflectionSliceItem[] {
+  return buildReflectionSliceItemsFromSlices(extractReflectionSlices(reflectionText));
+}
+
+export function extractInjectableReflectionSliceItems(reflectionText: string): ReflectionSliceItem[] {
+  return buildReflectionSliceItemsFromSlices(extractInjectableReflectionSlices(reflectionText));
 }

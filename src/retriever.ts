@@ -13,7 +13,12 @@ import {
 import { filterNoise } from "./noise-filter.js";
 import type { DecayEngine, DecayableMemory } from "./decay-engine.js";
 import type { TierManager } from "./tier-manager.js";
-import { toLifecycleMemory, getDecayableFromEntry } from "./smart-metadata.js";
+import {
+  getDecayableFromEntry,
+  isMemoryActiveAt,
+  parseSmartMetadata,
+  toLifecycleMemory,
+} from "./smart-metadata.js";
 
 // ============================================================================
 // Types & Configuration
@@ -43,7 +48,7 @@ export interface RetrievalConfig {
    *  - "siliconflow": same format as jina (alias, for clarity)
    *  - "voyage": Authorization: Bearer, string[] documents, data[].relevance_score
    *  - "pinecone": Api-Key header, {text}[] documents, data[].score */
-  rerankProvider?: "jina" | "siliconflow" | "voyage" | "pinecone";
+  rerankProvider?: "jina" | "siliconflow" | "voyage" | "pinecone" | "dashscope";
   /**
    * Length normalization: penalize long entries that dominate via sheer keyword
    * density. Formula: score *= 1 / (1 + log2(charLen / anchor)).
@@ -139,7 +144,7 @@ function clamp01WithFloor(value: number, floor: number): number {
 // Rerank Provider Adapters
 // ============================================================================
 
-type RerankProvider = "jina" | "siliconflow" | "voyage" | "pinecone";
+type RerankProvider = "jina" | "siliconflow" | "voyage" | "pinecone" | "dashscope";
 
 interface RerankItem {
   index: number;
@@ -156,6 +161,22 @@ function buildRerankRequest(
   topN: number,
 ): { headers: Record<string, string>; body: Record<string, unknown> } {
   switch (provider) {
+    case "dashscope":
+      // DashScope wraps query+documents under `input` and does not use top_n.
+      // Endpoint: https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+      return {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: {
+          model,
+          input: {
+            query,
+            documents,
+          },
+        },
+      };
     case "pinecone":
       return {
         headers: {
@@ -234,6 +255,15 @@ function parseRerankResponse(
   };
 
   switch (provider) {
+    case "dashscope": {
+      // DashScope: { output: { results: [{ index, relevance_score }] } }
+      const output = data.output as Record<string, unknown> | undefined;
+      if (output) {
+        return parseItems(output.results, ["relevance_score", "score"]);
+      }
+      // Fallback: try top-level results in case API format changes
+      return parseItems(data.results, ["relevance_score", "score"]);
+    }
     case "pinecone": {
       // Pinecone: usually { data: [{ index, score, ... }] }
       // Also tolerate results[] with score/relevance_score for robustness.
@@ -302,6 +332,12 @@ export class MemoryRetriever {
     this.accessTracker = tracker;
   }
 
+  private filterActiveResults<T extends MemorySearchResult>(results: T[]): T[] {
+    return results.filter((result) =>
+      isMemoryActiveAt(parseSmartMetadata(result.entry.metadata, result.entry)),
+    );
+  }
+
   async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
     const { query, limit, scopeFilter, category, source } = context;
     const safeLimit = clampInt(limit, 1, 20);
@@ -343,6 +379,7 @@ export class MemoryRetriever {
       limit,
       this.config.minScore,
       scopeFilter,
+      { excludeInactive: true },
     );
 
     // Filter by category if specified
@@ -458,6 +495,7 @@ export class MemoryRetriever {
       limit,
       0.1,
       scopeFilter,
+      { excludeInactive: true },
     );
 
     // Filter by category if specified
@@ -477,7 +515,7 @@ export class MemoryRetriever {
     scopeFilter?: string[],
     category?: string,
   ): Promise<Array<MemorySearchResult & { rank: number }>> {
-    const results = await this.store.bm25Search(query, limit, scopeFilter);
+    const results = await this.store.bm25Search(query, limit, scopeFilter, { excludeInactive: true });
 
     // Filter by category if specified
     const filtered = category

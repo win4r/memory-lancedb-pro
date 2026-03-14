@@ -1,8 +1,9 @@
 import type { MemoryEntry, MemorySearchResult } from "./store.js";
 import {
-  extractReflectionSliceItems,
-  extractReflectionSlices,
+  extractInjectableReflectionSliceItems,
+  extractInjectableReflectionSlices,
   sanitizeReflectionSliceLines,
+  sanitizeInjectableReflectionLines,
   type ReflectionSlices,
 } from "./reflection-slices.js";
 import { parseReflectionMetadata } from "./reflection-metadata.js";
@@ -57,7 +58,7 @@ export function buildReflectionStorePayloads(params: BuildReflectionStorePayload
   slices: ReflectionSlices;
   payloads: ReflectionStorePayload[];
 } {
-  const slices = extractReflectionSlices(params.reflectionText);
+  const slices = extractInjectableReflectionSlices(params.reflectionText);
   const eventId = params.eventId || createReflectionEventId({
     runAt: params.runAt,
     sessionKey: params.sessionKey,
@@ -82,7 +83,7 @@ export function buildReflectionStorePayloads(params: BuildReflectionStorePayload
   ];
 
   const itemPayloads = buildReflectionItemPayloads({
-    items: extractReflectionSliceItems(params.reflectionText),
+    items: extractInjectableReflectionSliceItems(params.reflectionText),
     eventId,
     agentId: params.agentId,
     sessionKey: params.sessionKey,
@@ -287,11 +288,12 @@ function buildInvariantCandidates(
     .filter(({ metadata }) => metadata.itemKind === "invariant")
     .flatMap(({ entry, metadata }) => {
       const lines = sanitizeReflectionSliceLines([entry.text]);
-      if (lines.length === 0) return [];
+      const safeLines = sanitizeInjectableReflectionLines([entry.text]);
+      if (safeLines.length === 0) return [];
 
       const defaults = getReflectionItemDecayDefaults("invariant");
       const timestamp = metadataTimestamp(metadata, entry.timestamp);
-      return lines.map((line) => ({
+      return safeLines.map((line) => ({
         line,
         timestamp,
         midpointDays: readPositiveNumber(metadata.decayMidpointDays, defaults.midpointDays),
@@ -307,7 +309,7 @@ function buildInvariantCandidates(
   return legacyRows.flatMap(({ entry, metadata }) => {
     const defaults = getReflectionItemDecayDefaults("invariant");
     const timestamp = metadataTimestamp(metadata, entry.timestamp);
-    const lines = sanitizeReflectionSliceLines(toStringArray(metadata.invariants));
+    const lines = sanitizeInjectableReflectionLines(toStringArray(metadata.invariants));
     return lines.map((line) => ({
       line,
       timestamp,
@@ -328,11 +330,12 @@ function buildDerivedCandidates(
     .filter(({ metadata }) => metadata.itemKind === "derived")
     .flatMap(({ entry, metadata }) => {
       const lines = sanitizeReflectionSliceLines([entry.text]);
-      if (lines.length === 0) return [];
+      const safeLines = sanitizeInjectableReflectionLines([entry.text]);
+      if (safeLines.length === 0) return [];
 
       const defaults = getReflectionItemDecayDefaults("derived");
       const timestamp = metadataTimestamp(metadata, entry.timestamp);
-      return lines.map((line) => ({
+      return safeLines.map((line) => ({
         line,
         timestamp,
         midpointDays: readPositiveNumber(metadata.decayMidpointDays, defaults.midpointDays),
@@ -347,7 +350,7 @@ function buildDerivedCandidates(
 
   return legacyRows.flatMap(({ entry, metadata }) => {
     const timestamp = metadataTimestamp(metadata, entry.timestamp);
-    const lines = sanitizeReflectionSliceLines(toStringArray(metadata.derived));
+    const lines = sanitizeInjectableReflectionLines(toStringArray(metadata.derived));
     if (lines.length === 0) return [];
 
     const defaults = {

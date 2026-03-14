@@ -104,6 +104,11 @@ assert.equal(
   pkg.version,
   "openclaw.plugin.json version should stay aligned with package.json",
 );
+assert.equal(
+  pkg.dependencies["apache-arrow"],
+  "18.1.0",
+  "package.json should declare apache-arrow directly so OpenClaw plugin installs do not miss the LanceDB runtime dependency",
+);
 
 const workDir = mkdtempSync(path.join(tmpdir(), "memory-plugin-regression-"));
 const services = [];

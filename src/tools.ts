@@ -15,10 +15,13 @@ import { isNoise } from "./noise-filter.js";
 import type { MemoryScopeManager } from "./scopes.js";
 import type { Embedder } from "./embedder.js";
 import {
+  appendRelation,
   buildSmartMetadata,
+  deriveFactKey,
   parseSmartMetadata,
   stringifySmartMetadata,
 } from "./smart-metadata.js";
+import { TEMPORAL_VERSIONED_CATEGORIES } from "./memory-categories.js";
 import { appendSelfImprovementEntry, ensureSelfImprovementLearningFiles } from "./self-improvement-files.js";
 import { getDisplayCategoryTag } from "./reflection-metadata.js";
 
@@ -1001,11 +1004,12 @@ export function registerMemoryStoreTool(
 
           // Check for duplicates using raw vector similarity (bypasses importance/recency weighting)
           // Fail-open by design: dedup must never block a legitimate memory write.
+          // excludeInactive: superseded historical records must not block new writes.
           let existing: Awaited<ReturnType<MemoryStore["vectorSearch"]>> = [];
           try {
             existing = await runtimeContext.store.vectorSearch(vector, 1, 0.1, [
               targetScope,
-            ]);
+            ], { excludeInactive: true });
           } catch (err) {
             console.warn(
               `memory-lancedb-pro: duplicate pre-check failed, continue store: ${String(err)}`,
@@ -1264,7 +1268,7 @@ export function registerMemoryUpdateTool(
         name: "memory_update",
       label: "Memory Update",
       description:
-        "Update an existing memory in-place. Preserves original timestamp. Use when correcting outdated info or adjusting importance/category without losing creation date.",
+        "Update an existing memory. For preferences/entities, changing text creates a new version (supersede) to preserve history. Metadata-only changes (importance, category) update in-place.",
       parameters: Type.Object({
         memoryId: Type.String({
           description:
@@ -1366,6 +1370,93 @@ export function registerMemoryUpdateTool(
             }
             newVector = await context.embedder.embedPassage(text);
           }
+
+          // --- Temporal supersede guard ---
+          // For temporal-versioned categories (preferences/entities), changing
+          // text must go through supersede to preserve the history chain.
+          if (text && newVector) {
+            const existing = await context.store.getById(resolvedId, scopeFilter);
+            if (existing) {
+              const meta = parseSmartMetadata(existing.metadata, existing);
+              if (TEMPORAL_VERSIONED_CATEGORIES.has(meta.memory_category)) {
+                const now = Date.now();
+                const factKey =
+                  meta.fact_key ?? deriveFactKey(meta.memory_category, text);
+
+                // Create new superseding record
+                const newMeta = buildSmartMetadata(
+                  { text, category: existing.category },
+                  {
+                    l0_abstract: text,
+                    l1_overview: meta.l1_overview,
+                    l2_content: text,
+                    memory_category: meta.memory_category,
+                    tier: meta.tier,
+                    access_count: 0,
+                    confidence: importance !== undefined ? clamp01(importance, 0.7) : meta.confidence,
+                    valid_from: now,
+                    fact_key: factKey,
+                    supersedes: resolvedId,
+                    relations: appendRelation([], {
+                      type: "supersedes",
+                      targetId: resolvedId,
+                    }),
+                  },
+                );
+
+                const newEntry = await context.store.store({
+                  text,
+                  vector: newVector,
+                  category: category ? (category as any) : existing.category,
+                  scope: existing.scope,
+                  importance:
+                    importance !== undefined
+                      ? clamp01(importance, 0.7)
+                      : existing.importance,
+                  metadata: stringifySmartMetadata(newMeta),
+                });
+
+                // Invalidate old record (metadata-only patch — safe)
+                try {
+                  const invalidatedMeta = buildSmartMetadata(existing, {
+                    fact_key: factKey,
+                    invalidated_at: now,
+                    superseded_by: newEntry.id,
+                    relations: appendRelation(meta.relations, {
+                      type: "superseded_by",
+                      targetId: newEntry.id,
+                    }),
+                  });
+                  await context.store.update(
+                    resolvedId,
+                    { metadata: stringifySmartMetadata(invalidatedMeta) },
+                    scopeFilter,
+                  );
+                } catch (patchErr) {
+                  // New record is already the source of truth; log but don't fail
+                  console.warn(
+                    `memory-pro: failed to patch superseded record ${resolvedId.slice(0, 8)}: ${patchErr}`,
+                  );
+                }
+
+                return {
+                  content: [
+                    {
+                      type: "text",
+                      text: `Superseded memory ${resolvedId.slice(0, 8)}... → new version ${newEntry.id.slice(0, 8)}...: "${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`,
+                    },
+                  ],
+                  details: {
+                    action: "superseded",
+                    oldId: resolvedId,
+                    newId: newEntry.id,
+                    category: meta.memory_category,
+                  },
+                };
+              }
+            }
+          }
+          // --- End temporal supersede guard ---
 
           const updates: Record<string, any> = {};
           if (text) updates.text = text;

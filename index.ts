@@ -34,7 +34,7 @@ import {
 } from "./src/reflection-store.js";
 import {
   extractReflectionLearningGovernanceCandidates,
-  extractReflectionMappedMemoryItems,
+  extractInjectableReflectionMappedMemoryItems,
 } from "./src/reflection-slices.js";
 import { createReflectionEventId } from "./src/reflection-event-store.js";
 import { buildReflectionMappedMetadata } from "./src/reflection-mapped-metadata.js";
@@ -103,7 +103,7 @@ interface PluginConfig {
     rerankApiKey?: string;
     rerankModel?: string;
     rerankEndpoint?: string;
-    rerankProvider?: "jina" | "siliconflow" | "voyage" | "pinecone";
+    rerankProvider?: "jina" | "siliconflow" | "voyage" | "pinecone" | "dashscope";
     recencyHalfLifeDays?: number;
     recencyWeight?: number;
     filterNoise?: boolean;
@@ -2803,7 +2803,7 @@ const memoryLanceDBProPlugin = {
             command: String(event.action || "unknown"),
           });
 
-          const mappedReflectionMemories = extractReflectionMappedMemoryItems(reflectionText);
+          const mappedReflectionMemories = extractInjectableReflectionMappedMemoryItems(reflectionText);
           for (const mapped of mappedReflectionMemories) {
             const vector = await embedder.embedPassage(mapped.text);
             let existing: Awaited<ReturnType<typeof store.vectorSearch>> = [];

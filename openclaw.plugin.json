@@ -186,10 +186,11 @@
               "jina",
               "siliconflow",
               "voyage",
-              "pinecone"
+              "pinecone",
+              "dashscope"
             ],
             "default": "jina",
-            "description": "Reranker provider format. Determines request/response shape and auth header."
+            "description": "Reranker provider format. Determines request/response shape and auth header. DashScope uses gte-rerank-v2 with endpoint https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank."
           },
           "candidatePoolSize": {
             "type": "integer",
@@ -632,7 +633,7 @@
     },
     "retrieval.rerankProvider": {
       "label": "Reranker Provider",
-      "help": "Provider format: jina (default), siliconflow, voyage, or pinecone",
+      "help": "Provider format: jina (default), siliconflow, voyage, pinecone, or dashscope",
       "advanced": true
     },
     "retrieval.candidatePoolSize": {
