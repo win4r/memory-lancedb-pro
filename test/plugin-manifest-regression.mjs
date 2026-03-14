@@ -78,6 +78,10 @@ assert.equal(
   false,
   "sessionMemory.enabled schema default should match runtime default",
 );
+assert.ok(
+  manifest.configSchema.properties.retrieval.properties.rerankProvider.enum.includes("tei"),
+  "rerankProvider schema should include tei",
+);
 
 assert.equal(
   manifest.version,

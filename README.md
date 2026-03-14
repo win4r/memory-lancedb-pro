@@ -39,7 +39,7 @@ Most AI agents have amnesia. They forget everything the moment you start a new c
 | Vector search | ✅ | ✅ |
 | BM25 full-text search | ❌ | ✅ |
 | Hybrid fusion (Vector + BM25) | ❌ | ✅ |
-| Cross-encoder rerank (Jina / custom) | ❌ | ✅ |
+| Cross-encoder rerank (multi-provider) | ❌ | ✅ |
 | Recency boost & time decay | ❌ | ✅ |
 | Length normalization | ❌ | ✅ |
 | MMR diversity | ❌ | ✅ |
@@ -290,7 +290,7 @@ Query → BM25 FTS ─────┘
 
 ### Cross-Encoder Reranking
 
-- Supports **Jina**, **SiliconFlow**, **Voyage AI**, **Pinecone**, or any compatible endpoint
+- Supports **Jina-compatible endpoints** plus dedicated adapters for **TEI**, **SiliconFlow**, **Voyage AI**, **Pinecone**, and **DashScope**
 - Hybrid scoring: 60% cross-encoder + 40% original fused score
 - Graceful degradation: falls back to cosine similarity on API failure
 
@@ -441,9 +441,31 @@ Cross-encoder reranking supports multiple providers via `rerankProvider`:
 | Provider | `rerankProvider` | Endpoint | Example Model |
 | --- | --- | --- | --- |
 | **Jina** (default) | `jina` | `https://api.jina.ai/v1/rerank` | `jina-reranker-v3` |
+| **Hugging Face TEI** | `tei` | `http://host:8081/rerank` | `BAAI/bge-reranker-v2-m3` |
 | **SiliconFlow** (free tier available) | `siliconflow` | `https://api.siliconflow.com/v1/rerank` | `BAAI/bge-reranker-v2-m3` |
 | **Voyage AI** | `voyage` | `https://api.voyageai.com/v1/rerank` | `rerank-2.5` |
 | **Pinecone** | `pinecone` | `https://api.pinecone.io/rerank` | `bge-reranker-v2-m3` |
+
+<details>
+<summary>TEI config example</summary>
+
+```json
+{
+  "retrieval": {
+    "rerank": "cross-encoder",
+    "rerankProvider": "tei",
+    "rerankEndpoint": "http://host:8081/rerank",
+    "rerankApiKey": "tei-local"
+  }
+}
+```
+
+Notes:
+- `tei` sends `{ query, texts }` and parses the top-level `[{ index, score }]` response used by Hugging Face Text Embeddings Inference.
+- `rerankModel` is ignored by the TEI adapter, so you do not need to set it for TEI container endpoints.
+- If your local TEI endpoint does not require auth, a placeholder `rerankApiKey` still enables the cross-encoder rerank path.
+
+</details>
 
 <details>
 <summary>SiliconFlow config example</summary>
@@ -497,6 +519,7 @@ Cross-encoder reranking supports multiple providers via `rerankProvider`:
 </details>
 
 Notes:
+- `tei` sends `{ query, texts }` and parses the top-level `[{ index, score }]` response format used by Hugging Face Text Embeddings Inference.
 - `voyage` sends `{ model, query, documents }` without `top_n`. Responses are parsed from `data[].relevance_score`.
 
 </details>

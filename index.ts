@@ -85,7 +85,13 @@ interface PluginConfig {
     rerankApiKey?: string;
     rerankModel?: string;
     rerankEndpoint?: string;
-    rerankProvider?: "jina" | "siliconflow" | "voyage" | "pinecone" | "dashscope";
+    rerankProvider?:
+      | "jina"
+      | "siliconflow"
+      | "voyage"
+      | "pinecone"
+      | "dashscope"
+      | "tei";
     recencyHalfLifeDays?: number;
     recencyWeight?: number;
     filterNoise?: boolean;
