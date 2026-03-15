@@ -186,7 +186,8 @@
               "jina",
               "siliconflow",
               "voyage",
-              "pinecone"
+              "pinecone",
+              "xinference"
             ],
             "default": "jina",
             "description": "Reranker provider format. Determines request/response shape and auth header."
@@ -608,7 +609,7 @@
     },
     "retrieval.rerankProvider": {
       "label": "Reranker Provider",
-      "help": "Provider format: jina (default), siliconflow, voyage, or pinecone",
+      "help": "Provider format: jina (default), siliconflow, voyage, pinecone, or xinference",
       "advanced": true
     },
     "retrieval.candidatePoolSize": {

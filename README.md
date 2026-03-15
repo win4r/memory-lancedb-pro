@@ -444,6 +444,7 @@ Cross-encoder reranking supports multiple providers via `rerankProvider`:
 | **SiliconFlow** (free tier available) | `siliconflow` | `https://api.siliconflow.com/v1/rerank` | `BAAI/bge-reranker-v2-m3` |
 | **Voyage AI** | `voyage` | `https://api.voyageai.com/v1/rerank` | `rerank-2.5` |
 | **Pinecone** | `pinecone` | `https://api.pinecone.io/rerank` | `bge-reranker-v2-m3` |
+| **Xinference** (local/self-hosted) | `xinference` | `http://localhost:9997/v1/rerank` | `Qwen3-Reranker-4B` |
 
 <details>
 <summary>SiliconFlow config example</summary>
@@ -496,8 +497,26 @@ Cross-encoder reranking supports multiple providers via `rerankProvider`:
 
 </details>
 
+<details>
+<summary>Xinference config example</summary>
+
+```json
+{
+  "retrieval": {
+    "rerank": "cross-encoder",
+    "rerankProvider": "xinference",
+    "rerankEndpoint": "http://localhost:9997/v1/rerank",
+    "rerankApiKey": "",
+    "rerankModel": "Qwen3-Reranker-4B"
+  }
+}
+```
+
+</details>
+
 Notes:
 - `voyage` sends `{ model, query, documents }` without `top_n`. Responses are parsed from `data[].relevance_score`.
+- `xinference` uses OpenAI-compatible format, same as Jina/SiliconFlow.
 
 </details>
 
