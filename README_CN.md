@@ -444,6 +444,7 @@ OpenClaw 默认行为：
 | **SiliconFlow**（有免费额度） | `siliconflow` | `https://api.siliconflow.com/v1/rerank` | `BAAI/bge-reranker-v2-m3` |
 | **Voyage AI** | `voyage` | `https://api.voyageai.com/v1/rerank` | `rerank-2.5` |
 | **Pinecone** | `pinecone` | `https://api.pinecone.io/rerank` | `bge-reranker-v2-m3` |
+| **Xinference**（本地/自托管） | `xinference` | `http://localhost:9997/v1/rerank` | `Qwen3-Reranker-4B` |
 
 <details>
 <summary>SiliconFlow 配置示例</summary>
@@ -496,7 +497,26 @@ OpenClaw 默认行为：
 
 </details>
 
-说明：`voyage` 发送 `{ model, query, documents }` 格式（不含 `top_n`），响应从 `data[].relevance_score` 解析。
+<details>
+<summary>Xinference 配置示例</summary>
+
+```json
+{
+  "retrieval": {
+    "rerank": "cross-encoder",
+    "rerankProvider": "xinference",
+    "rerankEndpoint": "http://localhost:9997/v1/rerank",
+    "rerankApiKey": "",
+    "rerankModel": "Qwen3-Reranker-4B"
+  }
+}
+```
+
+</details>
+
+说明：
+- `voyage` 发送 `{ model, query, documents }` 格式（不含 `top_n`），响应从 `data[].relevance_score` 解析。
+- `xinference` 使用 OpenAI 兼容格式，与 Jina/SiliconFlow 相同。
 
 </details>
 

@@ -41,7 +41,7 @@ const retrieverConfig = {
   filterNoise: false,
   rerank: "cross-encoder",
   rerankApiKey: "test-key",
-  rerankProvider: "jina",
+  rerankProvider: "xinference",
   rerankEndpoint: "http://127.0.0.1:9/v1/rerank",
   rerankModel: "test-reranker",
   candidatePoolSize: 12,

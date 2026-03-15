@@ -42,9 +42,8 @@ export interface RetrievalConfig {
    *  - "jina" (default): Authorization: Bearer, string[] documents, results[].relevance_score
    *  - "siliconflow": same format as jina (alias, for clarity)
    *  - "voyage": Authorization: Bearer, string[] documents, data[].relevance_score
-   *  - "pinecone": Api-Key header, {text}[] documents, data[].score
-   *  - "xinference": Authorization: Bearer, string[] documents, data[].score (OpenAI-compatible) */
-  rerankProvider?: "jina" | "siliconflow" | "voyage" | "pinecone" | "xinference";
+   *  - "pinecone": Api-Key header, {text}[] documents, data[].score */
+  rerankProvider?: "jina" | "siliconflow" | "voyage" | "pinecone";
   /**
    * Length normalization: penalize long entries that dominate via sheer keyword
    * density. Formula: score *= 1 / (1 + log2(charLen / anchor)).
@@ -140,7 +139,7 @@ function clamp01WithFloor(value: number, floor: number): number {
 // Rerank Provider Adapters
 // ============================================================================
 
-type RerankProvider = "jina" | "siliconflow" | "voyage" | "pinecone" | "xinference";
+type RerankProvider = "jina" | "siliconflow" | "voyage" | "pinecone";
 
 interface RerankItem {
   index: number;
@@ -188,19 +187,6 @@ function buildRerankRequest(
       };
     case "siliconflow":
     case "jina":
-    case "xinference":
-      return {
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: {
-          model,
-          query,
-          documents,
-          top_n: topN,
-        },
-      };
     default:
       return {
         headers: {
@@ -264,25 +250,11 @@ function parseRerankResponse(
         parseItems(data.results, ["relevance_score", "score"])
       );
     }
-    case "xinference": {
-  // Xinference: official API returns { results: [{ index, relevance_score, document }] }
-  // Older/local versions may return { data: [{ index, score }] }
-  // Prioritize official format (results + relevance_score), fallback to data + score
-  return (
-    parseItems(data.results, ["relevance_score", "score"]) ??
-    parseItems(data.data, ["relevance_score", "score"])
-  );
-}
     case "siliconflow":
-    case "jina": {
-      // Jina / SiliconFlow: { data: [{ index, score }] }
-      return (
-        parseItems(data.data, ["score", "relevance_score"]) ??
-        parseItems(data.results, ["score", "relevance_score"])
-      );
-    }
+    case "jina":
     default: {
-      // Fallback for unknown providers
+      // Jina / SiliconFlow: usually { results: [{ index, relevance_score }] }
+      // Also tolerate data[] for compatibility across gateways.
       return (
         parseItems(data.results, ["relevance_score", "score"]) ??
         parseItems(data.data, ["relevance_score", "score"])

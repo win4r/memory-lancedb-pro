@@ -85,7 +85,7 @@ interface PluginConfig {
     rerankApiKey?: string;
     rerankModel?: string;
     rerankEndpoint?: string;
-    rerankProvider?: "jina" | "siliconflow" | "voyage" | "pinecone";
+    rerankProvider?: "jina" | "siliconflow" | "voyage" | "pinecone" | "xinference";
     recencyHalfLifeDays?: number;
     recencyWeight?: number;
     filterNoise?: boolean;
@@ -3081,12 +3081,12 @@ const memoryLanceDBProPlugin = {
             // Test components (bounded time)
             const embedTest = await withTimeout(
               embedder.test(),
-              8_000,
+              30_000,
               "embedder.test()",
             );
             const retrievalTest = await withTimeout(
               retriever.test(),
-              8_000,
+              30_000,
               "retriever.test()",
             );
 

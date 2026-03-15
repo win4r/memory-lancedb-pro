@@ -89,7 +89,7 @@ function createMockApi(dbPath, embeddingBaseURL, llmBaseURL, logs) {
         hardMinScore: 0.62,
         candidatePoolSize: 12,
         rerank: "cross-encoder",
-        rerankProvider: "jina",
+        rerankProvider: "xinference",
         rerankEndpoint: "http://127.0.0.1:8202/v1/rerank",
         rerankModel: "qwen3-reranker-4b",
       },
