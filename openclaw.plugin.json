@@ -178,7 +178,7 @@
           "rerankEndpoint": {
             "type": "string",
             "default": "https://api.jina.ai/v1/rerank",
-            "description": "Reranker API endpoint URL. Compatible with Jina, SiliconFlow, Pinecone, or any service with a similar interface."
+            "description": "Reranker API endpoint URL. Compatible with Jina-compatible endpoints and dedicated adapters such as TEI, SiliconFlow, Voyage, Pinecone, and DashScope."
           },
           "rerankProvider": {
             "type": "string",
@@ -187,10 +187,11 @@
               "siliconflow",
               "voyage",
               "pinecone",
-              "dashscope"
+              "dashscope",
+              "tei"
             ],
             "default": "jina",
-            "description": "Reranker provider format. Determines request/response shape and auth header. DashScope uses gte-rerank-v2 with endpoint https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank."
+            "description": "Reranker provider format. Determines request/response shape and auth header. Use tei for Hugging Face Text Embeddings Inference /rerank endpoints. DashScope uses gte-rerank-v2 with endpoint https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank."
           },
           "candidatePoolSize": {
             "type": "integer",
@@ -626,7 +627,7 @@
     },
     "retrieval.rerankProvider": {
       "label": "Reranker Provider",
-      "help": "Provider format: jina (default), siliconflow, voyage, pinecone, or dashscope",
+      "help": "Provider format: jina (default), siliconflow, voyage, pinecone, dashscope, or tei",
       "advanced": true
     },
     "retrieval.candidatePoolSize": {

@@ -39,7 +39,7 @@
 | 向量搜索 | ✅ | ✅ |
 | BM25 全文检索 | ❌ | ✅ |
 | 混合融合（Vector + BM25） | ❌ | ✅ |
-| 跨编码器 Rerank（Jina / 自定义） | ❌ | ✅ |
+| 跨编码器 Rerank（多 Provider） | ❌ | ✅ |
 | 时效性加成 & 时间衰减 | ❌ | ✅ |
 | 长度归一化 | ❌ | ✅ |
 | MMR 多样性去重 | ❌ | ✅ |
@@ -290,7 +290,7 @@ Query → BM25 FTS ─────┘
 
 ### 跨编码器 Rerank
 
-- 支持 **Jina**、**SiliconFlow**、**Voyage AI**、**Pinecone** 或任意兼容端点
+- 支持 **Jina 兼容端点**，以及 **TEI**、**SiliconFlow**、**Voyage AI**、**Pinecone**、**DashScope** 的专用适配
 - 混合评分：60% cross-encoder + 40% 原始融合分
 - 降级策略：API 失败时回退到 cosine similarity rerank
 
@@ -441,9 +441,31 @@ OpenClaw 默认行为：
 | 提供商 | `rerankProvider` | Endpoint | 示例模型 |
 | --- | --- | --- | --- |
 | **Jina**（默认） | `jina` | `https://api.jina.ai/v1/rerank` | `jina-reranker-v3` |
+| **Hugging Face TEI** | `tei` | `http://host:8081/rerank` | `BAAI/bge-reranker-v2-m3` |
 | **SiliconFlow**（有免费额度） | `siliconflow` | `https://api.siliconflow.com/v1/rerank` | `BAAI/bge-reranker-v2-m3` |
 | **Voyage AI** | `voyage` | `https://api.voyageai.com/v1/rerank` | `rerank-2.5` |
 | **Pinecone** | `pinecone` | `https://api.pinecone.io/rerank` | `bge-reranker-v2-m3` |
+
+<details>
+<summary>TEI 配置示例</summary>
+
+```json
+{
+  "retrieval": {
+    "rerank": "cross-encoder",
+    "rerankProvider": "tei",
+    "rerankEndpoint": "http://host:8081/rerank",
+    "rerankApiKey": "tei-local"
+  }
+}
+```
+
+说明：
+- `tei` 发送 `{ query, texts }`，并解析 Hugging Face Text Embeddings Inference 使用的顶层 `[{ index, score }]` 响应。
+- TEI 适配器会忽略 `rerankModel`，所以对 TEI 容器端点无需单独配置该字段。
+- 如果你的本地 TEI 端点不需要鉴权，仍建议填一个占位 `rerankApiKey`，这样插件才会启用 cross-encoder rerank 路径。
+
+</details>
 
 <details>
 <summary>SiliconFlow 配置示例</summary>
@@ -496,7 +518,9 @@ OpenClaw 默认行为：
 
 </details>
 
-说明：`voyage` 发送 `{ model, query, documents }` 格式（不含 `top_n`），响应从 `data[].relevance_score` 解析。
+说明：
+- TEI 的请求/响应格式见上方 TEI 配置示例。
+- `voyage` 发送 `{ model, query, documents }` 格式（不含 `top_n`），响应从 `data[].relevance_score` 解析。
 
 </details>
 
