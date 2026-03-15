@@ -38,6 +38,7 @@ import { createReflectionEventId } from "./src/reflection-event-store.js";
 import { buildReflectionMappedMetadata } from "./src/reflection-mapped-metadata.js";
 import { createMemoryCLI } from "./cli.js";
 import { isNoise } from "./src/noise-filter.js";
+import { normalizeAutoCaptureText } from "./src/auto-capture-cleanup.js";
 
 // Import smart extraction & lifecycle components
 import { SmartExtractor } from "./src/smart-extractor.js";
@@ -655,64 +656,9 @@ function shouldSkipReflectionMessage(role: string, text: string): boolean {
   return false;
 }
 
-const AUTO_CAPTURE_INBOUND_META_SENTINELS = [
-  "Conversation info (untrusted metadata):",
-  "Sender (untrusted metadata):",
-  "Thread starter (untrusted, for context):",
-  "Replied message (untrusted, for context):",
-  "Forwarded message context (untrusted metadata):",
-  "Chat history since last reply (untrusted, for context):",
-] as const;
-
-const AUTO_CAPTURE_SESSION_RESET_PREFIX =
-  "A new session was started via /new or /reset. Execute your Session Startup sequence now";
-const AUTO_CAPTURE_ADDRESSING_PREFIX_RE = /^(?:<@!?[0-9]+>|@[A-Za-z0-9_.-]+)\s*/;
 const AUTO_CAPTURE_MAP_MAX_ENTRIES = 2000;
 const AUTO_CAPTURE_EXPLICIT_REMEMBER_RE =
   /^(?:请|請)?(?:记住|記住|记一下|記一下|别忘了|別忘了)[。.!?？!]*$/u;
-
-function isAutoCaptureInboundMetaSentinelLine(line: string): boolean {
-  const trimmed = line.trim();
-  return AUTO_CAPTURE_INBOUND_META_SENTINELS.some((sentinel) => sentinel === trimmed);
-}
-
-function stripLeadingInboundMetadata(text: string): string {
-  if (!text || !AUTO_CAPTURE_INBOUND_META_SENTINELS.some((sentinel) => text.includes(sentinel))) {
-    return text;
-  }
-
-  const lines = text.split("\n");
-  let index = 0;
-  while (index < lines.length && lines[index].trim() === "") {
-    index++;
-  }
-
-  while (index < lines.length && isAutoCaptureInboundMetaSentinelLine(lines[index])) {
-    index++;
-    if (index < lines.length && lines[index].trim() === "```json") {
-      index++;
-      while (index < lines.length && lines[index].trim() !== "```") {
-        index++;
-      }
-      if (index < lines.length && lines[index].trim() === "```") {
-        index++;
-      }
-    } else {
-      // Sentinel line not followed by a ```json fenced block — unexpected format.
-      // Log and return original text to avoid lossy stripping.
-      _autoCaptureDebugLog(
-        `memory-lancedb-pro: stripLeadingInboundMetadata: sentinel line not followed by json fenced block at line ${index}, returning original text`,
-      );
-      return text;
-    }
-
-    while (index < lines.length && lines[index].trim() === "") {
-      index++;
-    }
-  }
-
-  return lines.slice(index).join("\n").trim();
-}
 
 /**
  * Prune a Map to stay within the given maximum number of entries.
@@ -726,28 +672,6 @@ function pruneMapIfOver<K, V>(map: Map<K, V>, maxEntries: number): void {
     const key = iter.next().value;
     if (key !== undefined) map.delete(key);
   }
-}
-
-function stripAutoCaptureSessionResetPrefix(text: string): string {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith(AUTO_CAPTURE_SESSION_RESET_PREFIX)) {
-    return trimmed;
-  }
-
-  const blankLineIndex = trimmed.indexOf("\n\n");
-  if (blankLineIndex >= 0) {
-    return trimmed.slice(blankLineIndex + 2).trim();
-  }
-
-  const lines = trimmed.split("\n");
-  if (lines.length <= 2) {
-    return "";
-  }
-  return lines.slice(2).join("\n").trim();
-}
-
-function stripAutoCaptureAddressingPrefix(text: string): string {
-  return text.replace(AUTO_CAPTURE_ADDRESSING_PREFIX_RE, "").trim();
 }
 
 function isExplicitRememberCommand(text: string): boolean {
@@ -777,34 +701,6 @@ function buildAutoCaptureConversationKeyFromSessionKey(sessionKey: string): stri
   const match = /^agent:[^:]+:(.+)$/.exec(trimmed);
   const suffix = match?.[1]?.trim();
   return suffix || null;
-}
-
-function stripAutoCaptureInjectedPrefix(role: string, text: string): string {
-  if (role !== "user") {
-    return text.trim();
-  }
-
-  let normalized = text.trim();
-  normalized = normalized.replace(/^<relevant-memories>\s*[\s\S]*?<\/relevant-memories>\s*/i, "");
-  normalized = normalized.replace(
-    /^\[UNTRUSTED DATA[^\n]*\][\s\S]*?\[END UNTRUSTED DATA\]\s*/i,
-    "",
-  );
-  normalized = stripAutoCaptureSessionResetPrefix(normalized);
-  normalized = stripLeadingInboundMetadata(normalized);
-  normalized = stripAutoCaptureAddressingPrefix(normalized);
-  return normalized.trim();
-}
-
-/** Module-level debug logger for auto-capture helpers; set during plugin registration. */
-let _autoCaptureDebugLog: (msg: string) => void = () => { };
-
-function normalizeAutoCaptureText(role: unknown, text: string): string | null {
-  if (typeof role !== "string") return null;
-  const normalized = stripAutoCaptureInjectedPrefix(role, text);
-  if (!normalized) return null;
-  if (shouldSkipReflectionMessage(role, normalized)) return null;
-  return normalized;
 }
 
 function redactSecrets(text: string): string {
@@ -1886,9 +1782,6 @@ const memoryLanceDBProPlugin = {
     const autoCapturePendingIngressTexts = new Map<string, string[]>();
     const autoCaptureRecentTexts = new Map<string, string[]>();
 
-    // Wire up the module-level debug logger for pure helper functions.
-    _autoCaptureDebugLog = (msg: string) => api.logger.debug(msg);
-
     api.logger.info(
       `memory-lancedb-pro@${pluginVersion}: plugin registered (db: ${resolvedDbPath}, model: ${config.embedding.model || "text-embedding-3-small"}, smartExtraction: ${smartExtractor ? 'ON' : 'OFF'})`
     );
@@ -1899,7 +1792,7 @@ const memoryLanceDBProPlugin = {
         ctx.channelId,
         ctx.conversationId,
       );
-      const normalized = normalizeAutoCaptureText("user", event.content);
+      const normalized = normalizeAutoCaptureText("user", event.content, shouldSkipReflectionMessage);
       if (conversationKey && normalized) {
         const queue = autoCapturePendingIngressTexts.get(conversationKey) || [];
         queue.push(normalized);
@@ -2127,7 +2020,7 @@ const memoryLanceDBProPlugin = {
             const content = msgObj.content;
 
             if (typeof content === "string") {
-              const normalized = normalizeAutoCaptureText(role, content);
+              const normalized = normalizeAutoCaptureText(role, content, shouldSkipReflectionMessage);
               if (!normalized) {
                 skippedAutoCaptureTexts++;
               } else {
@@ -2147,7 +2040,7 @@ const memoryLanceDBProPlugin = {
                   typeof (block as Record<string, unknown>).text === "string"
                 ) {
                   const text = (block as Record<string, unknown>).text as string;
-                  const normalized = normalizeAutoCaptureText(role, text);
+                  const normalized = normalizeAutoCaptureText(role, text, shouldSkipReflectionMessage);
                   if (!normalized) {
                     skippedAutoCaptureTexts++;
                   } else {
