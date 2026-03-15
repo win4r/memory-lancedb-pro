@@ -7,6 +7,7 @@ import jitiFactory from "jiti";
 
 const jiti = jitiFactory(import.meta.url, { interopDefault: true });
 const { createLlmClient } = jiti("../src/llm-client.ts");
+const { resolveOAuthCallbackListenHost } = jiti("../src/llm-oauth.ts");
 
 const ACCOUNT_ID_CLAIM = "https://api.openai.com/auth";
 const originalFetch = globalThis.fetch;
@@ -106,6 +107,21 @@ describe("LLM OAuth client", () => {
       },
     ]);
     assert.equal(requestBody.store, false);
+  });
+
+  it("binds the OAuth callback server to the redirect host", () => {
+    assert.equal(
+      resolveOAuthCallbackListenHost("http://localhost:1455/auth/callback"),
+      "localhost",
+    );
+    assert.equal(
+      resolveOAuthCallbackListenHost("http://127.0.0.1:1455/auth/callback"),
+      "127.0.0.1",
+    );
+    assert.equal(
+      resolveOAuthCallbackListenHost("http://[::1]:1455/auth/callback"),
+      "::1",
+    );
   });
 
   it("recovers when the OAuth file appears after an initial missing-file failure", async () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import http from "node:http";
@@ -32,17 +32,20 @@ function makeJwt(accountId) {
   ].join(".");
 }
 
-describe("memory-pro auth login", () => {
+describe("memory-pro auth", () => {
   let tempDir;
   let server;
   let originalEnv;
+  let originalCwd;
 
   beforeEach(() => {
     tempDir = mkdtempSync(path.join(tmpdir(), "memory-cli-oauth-"));
     originalEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+    originalCwd = process.cwd();
   });
 
   afterEach(async () => {
+    process.chdir(originalCwd);
     for (const key of ENV_KEYS) {
       if (originalEnv[key] === undefined) {
         delete process.env[key];
@@ -57,7 +60,7 @@ describe("memory-pro auth login", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("replaces llm api-key settings with OAuth config", async () => {
+  it("replaces llm api-key settings with OAuth config while preserving custom baseURL", async () => {
     const authCode = "test-auth-code";
     const accountId = "acct_cli_123";
     const redirectPort = 18765;
@@ -136,7 +139,7 @@ describe("memory-pro auth login", () => {
           const parsed = new URL(url);
           const state = parsed.searchParams.get("state");
           setTimeout(() => {
-            const callback = new URL(`http://127.0.0.1:${redirectPort}/auth/callback`);
+            const callback = new URL(process.env.MEMORY_PRO_OAUTH_REDIRECT_URI);
             callback.searchParams.set("code", authCode);
             callback.searchParams.set("state", state || "");
             http.get(callback);
@@ -180,7 +183,7 @@ describe("memory-pro auth login", () => {
     assert.equal(pluginConfig.llm.oauthPath, oauthPath);
     assert.equal(pluginConfig.llm.model, "gpt-5.4");
     assert.equal(Object.prototype.hasOwnProperty.call(pluginConfig.llm, "apiKey"), false);
-    assert.equal(Object.prototype.hasOwnProperty.call(pluginConfig.llm, "baseURL"), false);
+    assert.equal(pluginConfig.llm.baseURL, "https://api.openai.com/v1");
 
     const output = logs.join("\n");
     assert.match(output, /Provider: OpenAI Codex \(openai-codex,/);
@@ -259,7 +262,7 @@ describe("memory-pro auth login", () => {
           const parsed = new URL(url);
           const state = parsed.searchParams.get("state");
           setTimeout(() => {
-            const callback = new URL(`http://127.0.0.1:${redirectPort}/auth/callback`);
+            const callback = new URL(process.env.MEMORY_PRO_OAUTH_REDIRECT_URI);
             callback.searchParams.set("code", authCode);
             callback.searchParams.set("state", state || "");
             http.get(callback);
@@ -298,5 +301,74 @@ describe("memory-pro auth login", () => {
 
     const output = logs.join("\n");
     assert.match(output, /Provider: OpenAI Codex \(openai-codex, prompt\)/);
+  });
+
+  it("resolves stored relative oauthPath against the config location during logout", async () => {
+    const workspaceDir = path.join(tempDir, "workspace");
+    const otherDir = path.join(tempDir, "other");
+    mkdirSync(workspaceDir, { recursive: true });
+    mkdirSync(otherDir, { recursive: true });
+
+    const configPath = path.join(workspaceDir, "openclaw.json");
+    const storedOauthPath = ".memory-lancedb-pro/oauth.json";
+    const actualOauthPath = path.join(workspaceDir, ".memory-lancedb-pro", "oauth.json");
+    mkdirSync(path.dirname(actualOauthPath), { recursive: true });
+    writeFileSync(actualOauthPath, JSON.stringify({ access_token: "token" }), "utf8");
+    writeFileSync(configPath, JSON.stringify({
+      plugins: {
+        entries: {
+          "memory-lancedb-pro": {
+            enabled: true,
+            config: {
+              llm: {
+                auth: "oauth",
+                oauthPath: storedOauthPath,
+                baseURL: "https://chatgpt-proxy.example/v1",
+              },
+            },
+          },
+        },
+      },
+    }, null, 2));
+
+    process.chdir(otherDir);
+
+    const program = new Command();
+    program.exitOverride();
+    createMemoryCLI({
+      store: {},
+      retriever: {},
+      scopeManager: {},
+      migrator: {},
+      pluginId: "memory-lancedb-pro",
+    })({ program });
+
+    const logs = [];
+    const originalLog = console.log;
+    console.log = (...args) => logs.push(args.join(" "));
+    try {
+      await program.parseAsync([
+        "node",
+        "openclaw",
+        "memory-pro",
+        "auth",
+        "logout",
+        "--config",
+        configPath,
+      ]);
+    } finally {
+      console.log = originalLog;
+    }
+
+    assert.equal(existsSync(actualOauthPath), false);
+
+    const updatedConfig = JSON.parse(readFileSync(configPath, "utf8"));
+    const pluginConfig = updatedConfig.plugins.entries["memory-lancedb-pro"].config;
+    assert.equal(pluginConfig.llm.auth, "api-key");
+    assert.equal(pluginConfig.llm.oauthPath, actualOauthPath);
+    assert.equal(pluginConfig.llm.baseURL, "https://chatgpt-proxy.example/v1");
+
+    const output = logs.join("\n");
+    assert.match(output, new RegExp(`Deleted OAuth file: ${actualOauthPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   });
 });

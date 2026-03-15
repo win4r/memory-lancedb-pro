@@ -84,6 +84,23 @@ function resolveOpenClawConfigPath(explicit?: string): string {
   return path.join(home, "openclaw.json");
 }
 
+function resolveLoginOauthPath(rawPath: unknown): string {
+  const trimmed = typeof rawPath === "string" ? rawPath.trim() : "";
+  const candidate = trimmed || path.join(process.cwd(), ".memory-lancedb-pro", "oauth.json");
+  return path.resolve(candidate);
+}
+
+function resolveConfiguredOauthPath(configPath: string, rawPath: unknown): string {
+  const trimmed = typeof rawPath === "string" ? rawPath.trim() : "";
+  if (!trimmed) {
+    return path.resolve(process.cwd(), ".memory-lancedb-pro", "oauth.json");
+  }
+  if (path.isAbsolute(trimmed)) {
+    return trimmed;
+  }
+  return path.resolve(path.dirname(configPath), trimmed);
+}
+
 const OAUTH_PROVIDER_CHOICES = listOAuthProviders()
   .map((provider) => `${provider.id} (${provider.label})`)
   .join(", ");
@@ -363,11 +380,7 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         const selectedModel = pickOauthModel(selectedProvider.providerId, currentModel, options.model);
         const oauthModel = normalizeOauthModel(selectedModel.model);
         const configPath = resolveOpenClawConfigPath(options.config);
-        const oauthPath = path.resolve(
-          options.oauthPath && String(options.oauthPath).trim()
-            ? String(options.oauthPath).trim()
-            : path.join(process.cwd(), ".memory-lancedb-pro", "oauth.json"),
-        );
+        const oauthPath = resolveLoginOauthPath(options.oauthPath);
         const timeoutMs = clampInt((parseInt(options.timeout, 10) || 120) * 1000, 15_000, 900_000);
 
         if (selectedModel.source === "default" && currentModel && currentModel.trim()) {
@@ -396,7 +409,13 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
 
         const openclawConfig = await loadOpenClawConfig(configPath);
         const pluginConfig = ensurePluginConfigRoot(openclawConfig, pluginId);
+        const existingLlm =
+          typeof pluginConfig.llm === "object" && pluginConfig.llm && !Array.isArray(pluginConfig.llm)
+            ? { ...(pluginConfig.llm as Record<string, unknown>) }
+            : {};
+        delete existingLlm.apiKey;
         pluginConfig.llm = {
+          ...existingLlm,
           auth: "oauth",
           oauthProvider: selectedProvider.providerId,
           model: oauthModel,
@@ -434,9 +453,7 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         } catch {
           // Leave the raw provider id visible for debugging stale or unsupported configs.
         }
-        const oauthPath = typeof llm.oauthPath === "string" && llm.oauthPath.trim()
-          ? llm.oauthPath.trim()
-          : path.join(process.cwd(), ".memory-lancedb-pro", "oauth.json");
+        const oauthPath = resolveConfiguredOauthPath(configPath, llm.oauthPath);
 
         let tokenInfo = "missing";
         try {
@@ -471,13 +488,10 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         const openclawConfig = await loadOpenClawConfig(configPath);
         const pluginConfig = ensurePluginConfigRoot(openclawConfig, pluginId);
         const llm = typeof pluginConfig.llm === "object" && pluginConfig.llm ? pluginConfig.llm as Record<string, unknown> : {};
-        const oauthPath = path.resolve(
+        const oauthPath =
           options.oauthPath && String(options.oauthPath).trim()
-            ? String(options.oauthPath).trim()
-            : typeof llm.oauthPath === "string" && llm.oauthPath.trim()
-              ? llm.oauthPath.trim()
-              : path.join(process.cwd(), ".memory-lancedb-pro", "oauth.json"),
-        );
+            ? resolveLoginOauthPath(options.oauthPath)
+            : resolveConfiguredOauthPath(configPath, llm.oauthPath);
 
         await rm(oauthPath, { force: true });
 

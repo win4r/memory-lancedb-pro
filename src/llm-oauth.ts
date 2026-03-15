@@ -487,6 +487,7 @@ async function waitForAuthorizationCode(state: string, timeoutMs: number, provid
   const redirectUri = new URL(resolveOauthRedirectUri(providerId));
   const listenPort = Number(redirectUri.port || 80);
   const callbackPath = redirectUri.pathname || "/";
+  const listenHost = resolveOAuthCallbackListenHost(redirectUri);
 
   return await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -542,8 +543,15 @@ async function waitForAuthorizationCode(state: string, timeoutMs: number, provid
       reject(err);
     });
 
-    server.listen(listenPort, "127.0.0.1");
+    server.listen(listenPort, listenHost);
   });
+}
+
+export function resolveOAuthCallbackListenHost(redirectUri: URL | string): string {
+  const parsed = typeof redirectUri === "string" ? new URL(redirectUri) : redirectUri;
+  const hostname = parsed.hostname.trim();
+  if (!hostname) return "127.0.0.1";
+  return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
 }
 
 export async function performOAuthLogin(options: OAuthLoginOptions): Promise<{ session: OAuthSession; authorizeUrl: string }> {
