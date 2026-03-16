@@ -101,6 +101,92 @@ function resolveConfiguredOauthPath(configPath: string, rawPath: unknown): strin
   return path.resolve(path.dirname(configPath), trimmed);
 }
 
+type RestorableApiKeyLlmConfig = {
+  auth?: "api-key";
+  apiKey?: string;
+  model?: string;
+  baseURL?: string;
+};
+
+type OAuthLlmBackup = {
+  version: 1;
+  hadLlmConfig: boolean;
+  llm: RestorableApiKeyLlmConfig;
+};
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isOauthLlmConfig(value: unknown): boolean {
+  return isPlainObject(value) && value.auth === "oauth";
+}
+
+function extractRestorableApiKeyLlmConfig(value: unknown): RestorableApiKeyLlmConfig {
+  if (!isPlainObject(value)) {
+    return {};
+  }
+
+  const result: RestorableApiKeyLlmConfig = {};
+  if (value.auth === "api-key") {
+    result.auth = "api-key";
+  }
+  if (typeof value.apiKey === "string") {
+    result.apiKey = value.apiKey;
+  }
+  if (typeof value.model === "string") {
+    result.model = value.model;
+  }
+  if (typeof value.baseURL === "string") {
+    result.baseURL = value.baseURL;
+  }
+  return result;
+}
+
+function buildApiKeyFallbackLlmConfig(value: unknown): RestorableApiKeyLlmConfig {
+  return {
+    auth: "api-key",
+    ...extractRestorableApiKeyLlmConfig(value),
+  };
+}
+
+function getOauthBackupPath(oauthPath: string): string {
+  const parsed = path.parse(oauthPath);
+  const fileName = parsed.ext
+    ? `${parsed.name}.llm-backup${parsed.ext}`
+    : `${parsed.base}.llm-backup.json`;
+  return path.join(parsed.dir, fileName);
+}
+
+async function saveOauthLlmBackup(oauthPath: string, llm: unknown, hadLlmConfig: boolean): Promise<void> {
+  const backupPath = getOauthBackupPath(oauthPath);
+  const payload: OAuthLlmBackup = {
+    version: 1,
+    hadLlmConfig,
+    llm: extractRestorableApiKeyLlmConfig(llm),
+  };
+  await mkdir(path.dirname(backupPath), { recursive: true });
+  await writeFile(backupPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
+}
+
+async function loadOauthLlmBackup(oauthPath: string): Promise<OAuthLlmBackup | null> {
+  const backupPath = getOauthBackupPath(oauthPath);
+  try {
+    const raw = await readFile(backupPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!isPlainObject(parsed) || parsed.version !== 1 || typeof parsed.hadLlmConfig !== "boolean") {
+      return null;
+    }
+    return {
+      version: 1,
+      hadLlmConfig: parsed.hadLlmConfig,
+      llm: extractRestorableApiKeyLlmConfig(parsed.llm),
+    };
+  } catch {
+    return null;
+  }
+}
+
 const OAUTH_PROVIDER_CHOICES = listOAuthProviders()
   .map((provider) => `${provider.id} (${provider.label})`)
   .join(", ");
@@ -409,13 +495,21 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
 
         const openclawConfig = await loadOpenClawConfig(configPath);
         const pluginConfig = ensurePluginConfigRoot(openclawConfig, pluginId);
-        const existingLlm =
-          typeof pluginConfig.llm === "object" && pluginConfig.llm && !Array.isArray(pluginConfig.llm)
-            ? { ...(pluginConfig.llm as Record<string, unknown>) }
-            : {};
-        delete existingLlm.apiKey;
+        const hadLlmConfig = isPlainObject(pluginConfig.llm);
+        const existingLlm = hadLlmConfig ? { ...(pluginConfig.llm as Record<string, unknown>) } : {};
+        const wasOauthMode = isOauthLlmConfig(existingLlm);
+
+        if (!wasOauthMode) {
+          await saveOauthLlmBackup(oauthPath, pluginConfig.llm, hadLlmConfig);
+        }
+
+        const nextLlm = wasOauthMode ? { ...existingLlm } : {};
+        delete nextLlm.apiKey;
+        if (!wasOauthMode) {
+          delete nextLlm.baseURL;
+        }
         pluginConfig.llm = {
-          ...existingLlm,
+          ...nextLlm,
           auth: "oauth",
           oauthProvider: selectedProvider.providerId,
           model: oauthModel,
@@ -492,12 +586,21 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
           options.oauthPath && String(options.oauthPath).trim()
             ? resolveLoginOauthPath(options.oauthPath)
             : resolveConfiguredOauthPath(configPath, llm.oauthPath);
+        const backupPath = getOauthBackupPath(oauthPath);
+        const backup = await loadOauthLlmBackup(oauthPath);
 
         await rm(oauthPath, { force: true });
+        await rm(backupPath, { force: true });
 
-        pluginConfig.llm ||= {};
-        pluginConfig.llm.auth = "api-key";
-        pluginConfig.llm.oauthPath = oauthPath;
+        if (backup) {
+          if (backup.hadLlmConfig) {
+            pluginConfig.llm = { ...backup.llm };
+          } else {
+            delete pluginConfig.llm;
+          }
+        } else {
+          pluginConfig.llm = buildApiKeyFallbackLlmConfig(llm);
+        }
         await saveOpenClawConfig(configPath, openclawConfig);
 
         console.log(`Deleted OAuth file: ${oauthPath}`);
