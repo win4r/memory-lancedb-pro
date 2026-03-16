@@ -68,6 +68,7 @@ function clampInt(value: number, min: number, max: number): number {
 }
 
 function resolveOpenClawConfigPath(explicit?: string): string {
+  const openclawHome = resolveOpenClawHome();
   if (explicit && explicit.trim()) {
     return path.resolve(explicit.trim());
   }
@@ -77,23 +78,29 @@ function resolveOpenClawConfigPath(explicit?: string): string {
     return path.resolve(fromEnv);
   }
 
-  const home = process.env.OPENCLAW_HOME?.trim()
+  return path.join(openclawHome, "openclaw.json");
+}
+
+function resolveOpenClawHome(): string {
+  return process.env.OPENCLAW_HOME?.trim()
     ? path.resolve(process.env.OPENCLAW_HOME.trim())
     : path.join(homedir(), ".openclaw");
+}
 
-  return path.join(home, "openclaw.json");
+function resolveDefaultOauthPath(): string {
+  return path.join(resolveOpenClawHome(), ".memory-lancedb-pro", "oauth.json");
 }
 
 function resolveLoginOauthPath(rawPath: unknown): string {
   const trimmed = typeof rawPath === "string" ? rawPath.trim() : "";
-  const candidate = trimmed || path.join(process.cwd(), ".memory-lancedb-pro", "oauth.json");
+  const candidate = trimmed || resolveDefaultOauthPath();
   return path.resolve(candidate);
 }
 
 function resolveConfiguredOauthPath(configPath: string, rawPath: unknown): string {
   const trimmed = typeof rawPath === "string" ? rawPath.trim() : "";
   if (!trimmed) {
-    return path.resolve(process.cwd(), ".memory-lancedb-pro", "oauth.json");
+    return resolveDefaultOauthPath();
   }
   if (path.isAbsolute(trimmed)) {
     return trimmed;
@@ -106,6 +113,7 @@ type RestorableApiKeyLlmConfig = {
   apiKey?: string;
   model?: string;
   baseURL?: string;
+  timeoutMs?: number;
 };
 
 type OAuthLlmBackup = {
@@ -140,14 +148,36 @@ function extractRestorableApiKeyLlmConfig(value: unknown): RestorableApiKeyLlmCo
   if (typeof value.baseURL === "string") {
     result.baseURL = value.baseURL;
   }
+  if (typeof value.timeoutMs === "number" && Number.isFinite(value.timeoutMs) && value.timeoutMs > 0) {
+    result.timeoutMs = Math.trunc(value.timeoutMs);
+  }
   return result;
 }
 
-function buildApiKeyFallbackLlmConfig(value: unknown): RestorableApiKeyLlmConfig {
-  return {
-    auth: "api-key",
-    ...extractRestorableApiKeyLlmConfig(value),
-  };
+function extractOauthSafeLlmConfig(value: unknown): RestorableApiKeyLlmConfig {
+  if (!isPlainObject(value)) {
+    return {};
+  }
+
+  const result: RestorableApiKeyLlmConfig = {};
+  if (typeof value.baseURL === "string") {
+    result.baseURL = value.baseURL;
+  }
+  if (typeof value.timeoutMs === "number" && Number.isFinite(value.timeoutMs) && value.timeoutMs > 0) {
+    result.timeoutMs = Math.trunc(value.timeoutMs);
+  }
+  return result;
+}
+
+function hasRestorableApiKeyLlmConfig(value: RestorableApiKeyLlmConfig): boolean {
+  return Object.keys(value).length > 0;
+}
+
+function buildLogoutFallbackLlmConfig(value: unknown): RestorableApiKeyLlmConfig {
+  if (isOauthLlmConfig(value)) {
+    return extractOauthSafeLlmConfig(value);
+  }
+  return extractRestorableApiKeyLlmConfig(value);
 }
 
 function getOauthBackupPath(oauthPath: string): string {
@@ -441,11 +471,11 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
 
   auth
     .command("login")
-    .description("Authenticate with ChatGPT/Codex in a browser, save a project OAuth file, and switch this plugin to llm.auth=oauth")
+    .description("Authenticate with ChatGPT/Codex in a browser, save the plugin OAuth file, and switch this plugin to llm.auth=oauth")
     .option("--config <path>", "OpenClaw config file to update")
     .option("--provider <provider>", `OAuth provider to use (${OAUTH_PROVIDER_CHOICES})`)
     .option("--model <model>", "Override the model saved into llm.model")
-    .option("--oauth-path <path>", "Project OAuth file path (default: .memory-lancedb-pro/oauth.json in the current directory)")
+    .option("--oauth-path <path>", "OAuth file path (default: ~/.openclaw/.memory-lancedb-pro/oauth.json)")
     .option("--timeout <seconds>", "OAuth callback timeout in seconds", "120")
     .option("--no-browser", "Do not auto-open the browser; print the authorization URL only")
     .action(async (options) => {
@@ -503,7 +533,7 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
           await saveOauthLlmBackup(oauthPath, pluginConfig.llm, hadLlmConfig);
         }
 
-        const nextLlm = wasOauthMode ? { ...existingLlm } : {};
+        const nextLlm = wasOauthMode ? { ...existingLlm } : extractOauthSafeLlmConfig(existingLlm);
         delete nextLlm.apiKey;
         if (!wasOauthMode) {
           delete nextLlm.baseURL;
@@ -572,9 +602,9 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
 
   auth
     .command("logout")
-    .description("Delete the project OAuth file and switch this plugin back to llm.auth=api-key")
+    .description("Delete the plugin OAuth file and switch this plugin back to llm.auth=api-key")
     .option("--config <path>", "OpenClaw config file to update")
-    .option("--oauth-path <path>", "Project OAuth file path to remove")
+    .option("--oauth-path <path>", "OAuth file path to remove")
     .action(async (options) => {
       try {
         const pluginId = context.pluginId || "memory-lancedb-pro";
@@ -599,7 +629,12 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
             delete pluginConfig.llm;
           }
         } else {
-          pluginConfig.llm = buildApiKeyFallbackLlmConfig(llm);
+          const fallbackLlm = buildLogoutFallbackLlmConfig(llm);
+          if (hasRestorableApiKeyLlmConfig(fallbackLlm)) {
+            pluginConfig.llm = fallbackLlm;
+          } else {
+            delete pluginConfig.llm;
+          }
         }
         await saveOpenClawConfig(configPath, openclawConfig);
 

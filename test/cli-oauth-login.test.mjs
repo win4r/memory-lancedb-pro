@@ -15,6 +15,7 @@ const ENV_KEYS = [
   "MEMORY_PRO_OAUTH_TOKEN_URL",
   "MEMORY_PRO_OAUTH_REDIRECT_URI",
   "MEMORY_PRO_OAUTH_CLIENT_ID",
+  "OPENCLAW_HOME",
 ];
 
 function encodeSegment(value) {
@@ -111,6 +112,7 @@ describe("memory-pro auth", () => {
       apiKey: "old-llm-key",
       model: "gpt-4o-mini",
       baseURL: "https://api.openai.com/v1",
+      timeoutMs: 45000,
     };
     writeFileSync(configPath, JSON.stringify({
       plugins: {
@@ -192,6 +194,7 @@ describe("memory-pro auth", () => {
     assert.equal(pluginConfig.llm.oauthProvider, "openai-codex");
     assert.equal(pluginConfig.llm.oauthPath, oauthPath);
     assert.equal(pluginConfig.llm.model, "gpt-5.4");
+    assert.equal(pluginConfig.llm.timeoutMs, 45000);
     assert.equal(Object.prototype.hasOwnProperty.call(pluginConfig.llm, "apiKey"), false);
     assert.equal(Object.prototype.hasOwnProperty.call(pluginConfig.llm, "baseURL"), false);
 
@@ -353,6 +356,104 @@ describe("memory-pro auth", () => {
     assert.match(output, /Provider: OpenAI Codex \(openai-codex, prompt\)/);
   });
 
+  it("defaults the OAuth file to the plugin-scoped path under OPENCLAW_HOME", async () => {
+    const authCode = "test-auth-code";
+    const accountId = "acct_cli_default_path_123";
+    const redirectPort = 18767;
+
+    server = http.createServer(async (req, res) => {
+      if (req.method !== "POST" || req.url !== "/oauth/token") {
+        res.writeHead(404).end();
+        return;
+      }
+
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      const params = new URLSearchParams(body);
+
+      assert.equal(params.get("grant_type"), "authorization_code");
+      assert.equal(params.get("code"), authCode);
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        access_token: makeJwt(accountId),
+        refresh_token: "refresh-cli-token",
+        expires_in: 3600,
+      }));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const tokenPort = server.address().port;
+
+    process.env.MEMORY_PRO_OAUTH_AUTHORIZE_URL = `http://127.0.0.1:${tokenPort}/oauth/authorize`;
+    process.env.MEMORY_PRO_OAUTH_TOKEN_URL = `http://127.0.0.1:${tokenPort}/oauth/token`;
+    process.env.MEMORY_PRO_OAUTH_REDIRECT_URI = `http://localhost:${redirectPort}/auth/callback`;
+    process.env.MEMORY_PRO_OAUTH_CLIENT_ID = "test-client-id";
+    process.env.OPENCLAW_HOME = path.join(tempDir, "openclaw-home");
+
+    const configPath = path.join(tempDir, "openclaw.json");
+    const oauthPath = path.join(process.env.OPENCLAW_HOME, ".memory-lancedb-pro", "oauth.json");
+    const backupPath = getBackupPath(oauthPath);
+    writeFileSync(configPath, JSON.stringify({
+      plugins: {
+        entries: {
+          "memory-lancedb-pro": {
+            enabled: true,
+            config: {
+              embedding: {
+                provider: "openai-compatible",
+                apiKey: "embed-key",
+              },
+            },
+          },
+        },
+      },
+    }, null, 2));
+
+    const program = new Command();
+    program.exitOverride();
+    createMemoryCLI({
+      store: {},
+      retriever: {},
+      scopeManager: {},
+      migrator: {},
+      pluginId: "memory-lancedb-pro",
+      oauthTestHooks: {
+        authorizeUrl: async (url) => {
+          const parsed = new URL(url);
+          const state = parsed.searchParams.get("state");
+          setTimeout(() => {
+            const callback = new URL(process.env.MEMORY_PRO_OAUTH_REDIRECT_URI);
+            callback.searchParams.set("code", authCode);
+            callback.searchParams.set("state", state || "");
+            http.get(callback);
+          }, 25);
+        },
+      },
+    })({ program });
+
+    await program.parseAsync([
+      "node",
+      "openclaw",
+      "memory-pro",
+      "auth",
+      "login",
+      "--config",
+      configPath,
+      "--provider",
+      "openai-codex",
+      "--model",
+      "openai/gpt-5.4",
+      "--no-browser",
+    ]);
+
+    assert.equal(existsSync(oauthPath), true);
+    assert.equal(existsSync(backupPath), true);
+
+    const updatedConfig = JSON.parse(readFileSync(configPath, "utf8"));
+    const pluginConfig = updatedConfig.plugins.entries["memory-lancedb-pro"].config;
+    assert.equal(pluginConfig.llm.oauthPath, oauthPath);
+  });
+
   it("resolves stored relative oauthPath against the config location during logout", async () => {
     const workspaceDir = path.join(tempDir, "workspace");
     const otherDir = path.join(tempDir, "other");
@@ -414,12 +515,63 @@ describe("memory-pro auth", () => {
 
     const updatedConfig = JSON.parse(readFileSync(configPath, "utf8"));
     const pluginConfig = updatedConfig.plugins.entries["memory-lancedb-pro"].config;
-    assert.equal(pluginConfig.llm.auth, "api-key");
     assert.equal(pluginConfig.llm.baseURL, "https://chatgpt-proxy.example/v1");
     assert.equal(Object.prototype.hasOwnProperty.call(pluginConfig.llm, "oauthPath"), false);
     assert.equal(Object.prototype.hasOwnProperty.call(pluginConfig.llm, "oauthProvider"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(pluginConfig.llm, "auth"), false);
 
     const output = logs.join("\n");
     assert.match(output, new RegExp(`Deleted OAuth file: ${actualOauthPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  });
+
+  it("removes llm config on logout when only OAuth-generated fields remain and no backup exists", async () => {
+    const workspaceDir = path.join(tempDir, "workspace");
+    mkdirSync(workspaceDir, { recursive: true });
+
+    const configPath = path.join(workspaceDir, "openclaw.json");
+    const oauthPath = path.join(workspaceDir, ".memory-lancedb-pro", "oauth.json");
+    mkdirSync(path.dirname(oauthPath), { recursive: true });
+    writeFileSync(oauthPath, JSON.stringify({ access_token: "token" }), "utf8");
+    writeFileSync(configPath, JSON.stringify({
+      plugins: {
+        entries: {
+          "memory-lancedb-pro": {
+            enabled: true,
+            config: {
+              llm: {
+                auth: "oauth",
+                oauthProvider: "openai-codex",
+                oauthPath,
+                model: "gpt-5.4",
+              },
+            },
+          },
+        },
+      },
+    }, null, 2));
+
+    const program = new Command();
+    program.exitOverride();
+    createMemoryCLI({
+      store: {},
+      retriever: {},
+      scopeManager: {},
+      migrator: {},
+      pluginId: "memory-lancedb-pro",
+    })({ program });
+
+    await program.parseAsync([
+      "node",
+      "openclaw",
+      "memory-pro",
+      "auth",
+      "logout",
+      "--config",
+      configPath,
+    ]);
+
+    const updatedConfig = JSON.parse(readFileSync(configPath, "utf8"));
+    const pluginConfig = updatedConfig.plugins.entries["memory-lancedb-pro"].config;
+    assert.equal(Object.prototype.hasOwnProperty.call(pluginConfig, "llm"), false);
   });
 });

@@ -452,7 +452,7 @@
           },
           "oauthPath": {
             "type": "string",
-            "description": "Project-scoped OAuth token file for llm.auth=oauth. Defaults to .memory-lancedb-pro/oauth.json."
+            "description": "OAuth token file for llm.auth=oauth. Defaults to ~/.openclaw/.memory-lancedb-pro/oauth.json."
           },
           "timeoutMs": {
             "type": "integer",
@@ -887,7 +887,7 @@
     },
     "llm.auth": {
       "label": "LLM Auth",
-      "help": "api-key uses llm.apiKey or embedding.apiKey. oauth uses a project-scoped OAuth token file.",
+      "help": "api-key uses llm.apiKey or embedding.apiKey. oauth uses a plugin-scoped OAuth token file by default.",
       "advanced": true
     },
     "llm.oauthProvider": {
@@ -897,7 +897,7 @@
     },
     "llm.oauthPath": {
       "label": "LLM OAuth File",
-      "help": "Project-scoped OAuth token file used when llm.auth=oauth. Default: .memory-lancedb-pro/oauth.json",
+      "help": "OAuth token file used when llm.auth=oauth. Default: ~/.openclaw/.memory-lancedb-pro/oauth.json",
       "advanced": true
     },
     "llm.model": {
