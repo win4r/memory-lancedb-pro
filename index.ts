@@ -36,6 +36,14 @@ import {
 } from "./src/reflection-slices.js";
 import { createReflectionEventId } from "./src/reflection-event-store.js";
 import { buildReflectionMappedMetadata } from "./src/reflection-mapped-metadata.js";
+import {
+  extractAutoCaptureRecords,
+  shouldCapture,
+  storeAutoCaptureCandidates,
+  toAutoCaptureCandidates,
+  type MessageRole,
+  type NormalizedAutoCaptureRecord,
+} from "./src/auto-capture.js";
 import { createMemoryCLI } from "./cli.js";
 import { isNoise } from "./src/noise-filter.js";
 
@@ -1262,114 +1270,6 @@ async function generateReflectionText(params: {
   };
 }
 
-// ============================================================================
-// Capture & Category Detection (from old plugin)
-// ============================================================================
-
-const MEMORY_TRIGGERS = [
-  /zapamatuj si|pamatuj|remember/i,
-  /preferuji|radši|nechci|prefer/i,
-  /rozhodli jsme|budeme používat/i,
-  /\b(we )?decided\b|we'?ll use|we will use|switch(ed)? to|migrate(d)? to|going forward|from now on/i,
-  /\+\d{10,}/,
-  /[\w.-]+@[\w.-]+\.\w+/,
-  /můj\s+\w+\s+je|je\s+můj/i,
-  /my\s+\w+\s+is|is\s+my/i,
-  /i (like|prefer|hate|love|want|need|care)/i,
-  /always|never|important/i,
-  // Chinese triggers (Traditional & Simplified)
-  /記住|记住|記一下|记一下|別忘了|别忘了|備註|备注/,
-  /偏好|喜好|喜歡|喜欢|討厭|讨厌|不喜歡|不喜欢|愛用|爱用|習慣|习惯/,
-  /決定|决定|選擇了|选择了|改用|換成|换成|以後用|以后用/,
-  /我的\S+是|叫我|稱呼|称呼/,
-  /老是|講不聽|總是|总是|從不|从不|一直|每次都/,
-  /重要|關鍵|关键|注意|千萬別|千万别/,
-  /幫我|筆記|存檔|存起來|存一下|重點|原則|底線/,
-];
-
-const CAPTURE_EXCLUDE_PATTERNS = [
-  // Memory management / meta-ops: do not store as long-term memory
-  /\b(memory-pro|memory_store|memory_recall|memory_forget|memory_update)\b/i,
-  /\bopenclaw\s+memory-pro\b/i,
-  /\b(delete|remove|forget|purge|cleanup|clean up|clear)\b.*\b(memory|memories|entry|entries)\b/i,
-  /\b(memory|memories)\b.*\b(delete|remove|forget|purge|cleanup|clean up|clear)\b/i,
-  /\bhow do i\b.*\b(delete|remove|forget|purge|cleanup|clear)\b/i,
-  /(删除|刪除|清理|清除).{0,12}(记忆|記憶|memory)/i,
-];
-
-export function shouldCapture(text: string): boolean {
-  let s = text.trim();
-
-  // Strip OpenClaw metadata headers (Conversation info or Sender)
-  const metadataPattern = /^(Conversation info|Sender) \(untrusted metadata\):[\s\S]*?\n\s*\n/gim;
-  s = s.replace(metadataPattern, "");
-
-  // CJK characters carry more meaning per character, use lower minimum threshold
-  const hasCJK = /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/.test(
-    s,
-  );
-  const minLen = hasCJK ? 4 : 10;
-  if (s.length < minLen || s.length > 500) {
-    return false;
-  }
-  // Skip injected context from memory recall
-  if (s.includes("<relevant-memories>")) {
-    return false;
-  }
-  // Skip system-generated content
-  if (s.startsWith("<") && s.includes("</")) {
-    return false;
-  }
-  // Skip agent summary responses (contain markdown formatting)
-  if (s.includes("**") && s.includes("\n-")) {
-    return false;
-  }
-  // Skip emoji-heavy responses (likely agent output)
-  const emojiCount = (s.match(/[\u{1F300}-\u{1F9FF}]/gu) || []).length;
-  if (emojiCount > 3) {
-    return false;
-  }
-  // Exclude obvious memory-management prompts
-  if (CAPTURE_EXCLUDE_PATTERNS.some((r) => r.test(s))) return false;
-
-  return MEMORY_TRIGGERS.some((r) => r.test(s));
-}
-
-export function detectCategory(
-  text: string,
-): "preference" | "fact" | "decision" | "entity" | "other" {
-  const lower = text.toLowerCase();
-  if (
-    /prefer|radši|like|love|hate|want|偏好|喜歡|喜欢|討厭|讨厌|不喜歡|不喜欢|愛用|爱用|習慣|习惯/i.test(
-      lower,
-    )
-  ) {
-    return "preference";
-  }
-  if (
-    /rozhodli|decided|we decided|will use|we will use|we'?ll use|switch(ed)? to|migrate(d)? to|going forward|from now on|budeme|決定|决定|選擇了|选择了|改用|換成|换成|以後用|以后用|規則|流程|SOP/i.test(
-      lower,
-    )
-  ) {
-    return "decision";
-  }
-  if (
-    /\+\d{10,}|@[\w.-]+\.\w+|is called|jmenuje se|我的\S+是|叫我|稱呼|称呼/i.test(
-      lower,
-    )
-  ) {
-    return "entity";
-  }
-  if (
-    /\b(is|are|has|have|je|má|jsou)\b|總是|总是|從不|从不|一直|每次都|老是/i.test(
-      lower,
-    )
-  ) {
-    return "fact";
-  }
-  return "other";
-}
-
 function sanitizeForContext(text: string): string {
   return text
     .replace(/[\r\n]+/g, " ")
@@ -1952,8 +1852,8 @@ const memoryLanceDBProPlugin = {
     // All three Maps are pruned to AUTO_CAPTURE_MAP_MAX_ENTRIES to prevent unbounded
     // growth in long-running processes with many distinct sessions.
     const autoCaptureSeenTextCount = new Map<string, number>();
-    const autoCapturePendingIngressTexts = new Map<string, string[]>();
-    const autoCaptureRecentTexts = new Map<string, string[]>();
+    const autoCapturePendingIngressTexts = new Map<string, NormalizedAutoCaptureRecord[]>();
+    const autoCaptureRecentTexts = new Map<string, NormalizedAutoCaptureRecord[]>();
 
     // Wire up the module-level debug logger for pure helper functions.
     _autoCaptureDebugLog = (msg: string) => api.logger.debug(msg);
@@ -1971,7 +1871,7 @@ const memoryLanceDBProPlugin = {
       const normalized = normalizeAutoCaptureText("user", event.content);
       if (conversationKey && normalized) {
         const queue = autoCapturePendingIngressTexts.get(conversationKey) || [];
-        queue.push(normalized);
+        queue.push({ text: normalized, role: "user" });
         autoCapturePendingIngressTexts.set(conversationKey, queue.slice(-6));
         pruneMapIfOver(autoCapturePendingIngressTexts, AUTO_CAPTURE_MAP_MAX_ENTRIES);
       }
@@ -2239,57 +2139,12 @@ const memoryLanceDBProPlugin = {
             `memory-lancedb-pro: auto-capture agent_end payload for agent ${agentId} (sessionKey=${sessionKey}, captureAssistant=${config.captureAssistant === true}, ${summarizeAgentEndMessages(event.messages)})`,
           );
 
-          // Extract text content from messages
-          const eligibleTexts: string[] = [];
-          let skippedAutoCaptureTexts = 0;
-          for (const msg of event.messages) {
-            if (!msg || typeof msg !== "object") {
-              continue;
-            }
-            const msgObj = msg as Record<string, unknown>;
-
-            const role = msgObj.role;
-            const captureAssistant = config.captureAssistant === true;
-            if (
-              role !== "user" &&
-              !(captureAssistant && role === "assistant")
-            ) {
-              continue;
-            }
-
-            const content = msgObj.content;
-
-            if (typeof content === "string") {
-              const normalized = normalizeAutoCaptureText(role, content);
-              if (!normalized) {
-                skippedAutoCaptureTexts++;
-              } else {
-                eligibleTexts.push(normalized);
-              }
-              continue;
-            }
-
-            if (Array.isArray(content)) {
-              for (const block of content) {
-                if (
-                  block &&
-                  typeof block === "object" &&
-                  "type" in block &&
-                  (block as Record<string, unknown>).type === "text" &&
-                  "text" in block &&
-                  typeof (block as Record<string, unknown>).text === "string"
-                ) {
-                  const text = (block as Record<string, unknown>).text as string;
-                  const normalized = normalizeAutoCaptureText(role, text);
-                  if (!normalized) {
-                    skippedAutoCaptureTexts++;
-                  } else {
-                    eligibleTexts.push(normalized);
-                  }
-                }
-              }
-            }
-          }
+          const { records: eligibleRecords, skippedCount: skippedAutoCaptureTexts } =
+            extractAutoCaptureRecords(event.messages, {
+              captureAssistant: config.captureAssistant === true,
+              normalizeText: (role: MessageRole, text: string) =>
+                normalizeAutoCaptureText(role, text),
+            });
 
           const conversationKey = buildAutoCaptureConversationKeyFromSessionKey(sessionKey);
           const pendingIngressTexts = conversationKey
@@ -2300,29 +2155,30 @@ const memoryLanceDBProPlugin = {
           }
 
           const previousSeenCount = autoCaptureSeenTextCount.get(sessionKey) ?? 0;
-          let newTexts = eligibleTexts;
+          let newRecords = eligibleRecords;
           if (pendingIngressTexts.length > 0) {
-            newTexts = pendingIngressTexts;
-          } else if (previousSeenCount > 0 && eligibleTexts.length > previousSeenCount) {
-            newTexts = eligibleTexts.slice(previousSeenCount);
+            newRecords = pendingIngressTexts;
+          } else if (previousSeenCount > 0 && eligibleRecords.length > previousSeenCount) {
+            newRecords = eligibleRecords.slice(previousSeenCount);
           }
-          autoCaptureSeenTextCount.set(sessionKey, eligibleTexts.length);
+          autoCaptureSeenTextCount.set(sessionKey, eligibleRecords.length);
           pruneMapIfOver(autoCaptureSeenTextCount, AUTO_CAPTURE_MAP_MAX_ENTRIES);
 
           const priorRecentTexts = autoCaptureRecentTexts.get(sessionKey) || [];
-          let texts = newTexts;
+          let records = newRecords;
           if (
-            texts.length === 1 &&
-            isExplicitRememberCommand(texts[0]) &&
+            records.length === 1 &&
+            isExplicitRememberCommand(records[0].text) &&
             priorRecentTexts.length > 0
           ) {
-            texts = [...priorRecentTexts.slice(-1), ...texts];
+            records = [...priorRecentTexts.slice(-1), ...records];
           }
-          if (newTexts.length > 0) {
-            const nextRecentTexts = [...priorRecentTexts, ...newTexts].slice(-6);
+          if (newRecords.length > 0) {
+            const nextRecentTexts = [...priorRecentTexts, ...newRecords].slice(-6);
             autoCaptureRecentTexts.set(sessionKey, nextRecentTexts);
             pruneMapIfOver(autoCaptureRecentTexts, AUTO_CAPTURE_MAP_MAX_ENTRIES);
           }
+          const texts = records.map((record) => record.text);
 
           const minMessages = config.extractMinMessages ?? 2;
           if (skippedAutoCaptureTexts > 0) {
@@ -2335,9 +2191,9 @@ const memoryLanceDBProPlugin = {
               `memory-lancedb-pro: auto-capture using ${pendingIngressTexts.length} pending ingress text(s) for agent ${agentId}`,
             );
           }
-          if (texts.length !== eligibleTexts.length) {
+          if (records.length !== eligibleRecords.length) {
             api.logger.debug(
-              `memory-lancedb-pro: auto-capture narrowed ${eligibleTexts.length} eligible history text(s) to ${texts.length} new text(s) for agent ${agentId}`,
+              `memory-lancedb-pro: auto-capture narrowed ${eligibleRecords.length} eligible history text(s) to ${texts.length} new text(s) for agent ${agentId}`,
             );
           }
           api.logger.debug(
@@ -2406,7 +2262,20 @@ const memoryLanceDBProPlugin = {
           // ----------------------------------------------------------------
           // Fallback: regex-triggered capture (original logic)
           // ----------------------------------------------------------------
-          const toCapture = texts.filter((text) => text && shouldCapture(text) && !isNoise(text));
+          const toCapture = toAutoCaptureCandidates(
+            records.filter((record) => {
+              if (!record.text || !shouldCapture(record.text) || isNoise(record.text)) {
+                return false;
+              }
+              if (isUserMdExclusiveMemory({ text: record.text }, config.workspaceBoundary)) {
+                api.logger.info(
+                  `memory-lancedb-pro: skipped USER.md-exclusive auto-capture text for agent ${agentId}`,
+                );
+                return false;
+              }
+              return true;
+            }),
+          );
           if (toCapture.length === 0) {
             if (texts.length > 0) {
               api.logger.debug(
@@ -2424,71 +2293,47 @@ const memoryLanceDBProPlugin = {
           );
 
           // Store each capturable piece (limit to 3 per conversation)
-          let stored = 0;
-          for (const text of toCapture.slice(0, 3)) {
-            if (isUserMdExclusiveMemory({ text }, config.workspaceBoundary)) {
-              api.logger.info(
-                `memory-lancedb-pro: skipped USER.md-exclusive auto-capture text for agent ${agentId}`,
-              );
-              continue;
-            }
-
-            const category = detectCategory(text);
-            const vector = await embedder.embedPassage(text);
-
-            // Check for duplicates using raw vector similarity (bypasses importance/recency weighting)
-            // Fail-open by design: dedup should not block auto-capture writes.
-            let existing: Awaited<ReturnType<typeof store.vectorSearch>> = [];
-            try {
-              existing = await store.vectorSearch(vector, 1, 0.1, [
-                defaultScope,
-              ]);
-            } catch (err) {
-              api.logger.warn(
-                `memory-lancedb-pro: auto-capture duplicate pre-check failed, continue store: ${String(err)}`,
-              );
-            }
-
-            if (existing.length > 0 && existing[0].score > 0.95) {
-              continue;
-            }
-
-            await store.store({
-              text,
-              vector,
-              importance: 0.7,
-              category,
-              scope: defaultScope,
-              metadata: stringifySmartMetadata(
+          const storedEntries = await storeAutoCaptureCandidates({
+            candidates: toCapture,
+            store,
+            embedder,
+            scope: defaultScope,
+            importance: 0.7,
+            limit: 3,
+            buildBaseMetadata: (candidate) =>
+              stringifySmartMetadata(
                 buildSmartMetadata(
                   {
-                    text,
-                    category,
+                    text: candidate.text,
+                    category: candidate.category,
                     importance: 0.7,
                   },
                   {
-                    l0_abstract: text,
-                    l1_overview: `- ${text}`,
-                    l2_content: text,
+                    l0_abstract: candidate.text,
+                    l1_overview: `- ${candidate.text}`,
+                    l2_content: candidate.text,
                     source_session: (event as any).sessionKey || "unknown",
                   },
                 ),
               ),
-            });
-            stored++;
+          });
 
-            // Dual-write to Markdown mirror if enabled
-            if (mdMirror) {
-              await mdMirror(
-                { text, category, scope: defaultScope, timestamp: Date.now() },
-                { source: "auto-capture", agentId },
-              );
-            }
+          for (const entry of storedEntries) {
+            if (!mdMirror) continue;
+            await mdMirror(
+              {
+                text: entry.text,
+                category: entry.category,
+                scope: entry.scope,
+                timestamp: entry.timestamp,
+              },
+              { source: "auto-capture", agentId },
+            );
           }
 
-          if (stored > 0) {
+          if (storedEntries.length > 0) {
             api.logger.info(
-              `memory-lancedb-pro: auto-captured ${stored} memories for agent ${agentId} in scope ${defaultScope}`,
+              `memory-lancedb-pro: auto-captured ${storedEntries.length} memories for agent ${agentId} in scope ${defaultScope}`,
             );
           }
         } catch (err) {
