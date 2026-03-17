@@ -511,7 +511,7 @@ export class SmartExtractor {
     // should always be stored as a new memory, not merged/skipped.
     // Example: "喜欢麦当劳的板烧鸡腿堡" and "喜欢麦当劳的麦辣鸡翅" are
     // different preferences even though they share the same brand.
-    if (candidate.category === "preference") {
+    if (candidate.category === "preferences") {
       const candidateSlot = inferAtomicBrandItemPreferenceSlot(candidate.content);
       if (candidateSlot) {
         const allDifferentItem = activeSimilar.every((r) => {
