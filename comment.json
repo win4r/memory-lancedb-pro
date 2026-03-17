@@ -1,3 +1,0 @@
-{
-  "body": "## Update\n\nThe latest changes have been pushed to this PR:\n\n- Added regression tests for CJK recursion fix (all 5 tests pass)\n- Removed unused SAFE_CHAR_LIMITS\n- Added batch timeout comments\n- Fixed all reviewer concerns\n\nThe code has been tested locally. Please sync the branch to get the latest commits."
-}

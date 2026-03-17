@@ -1,3 +1,0 @@
-{
-  "title": "fix: prevent infinite recursion in embedSingle() for CJK text (replaces PR #215)"
-}
