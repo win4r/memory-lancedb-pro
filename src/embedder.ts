@@ -264,25 +264,6 @@ const EMBED_TIMEOUT_MS = 10_000;
  */
 const STRICT_REDUCTION_FACTOR = 0.5; // Each retry must be at most 50% of previous
 
-/**
- * Safe character limits per model for forced truncation.
- * CJK characters typically consume ~3 tokens each, so the char limit is
- * conservative compared to the token limit.
- */
-const SAFE_CHAR_LIMITS: Record<string, number> = {
-  "nomic-embed-text": 2300,
-  "mxbai-embed-large": 2300,
-  "all-MiniLM-L6-v2": 1000,
-  "all-mpnet-base-v2": 1500,
-};
-
-const DEFAULT_SAFE_CHAR_LIMIT = 2000;
-
-/** Return a safe character count for forced truncation given a model name. */
-function getSafeCharLimit(model: string): number {
-  return SAFE_CHAR_LIMITS[model] ?? DEFAULT_SAFE_CHAR_LIMIT;
-}
-
 export function getVectorDimensions(model: string, overrideDims?: number): number {
   if (overrideDims && overrideDims > 0) {
     return overrideDims;
@@ -493,6 +474,10 @@ export class Embedder {
     return this.withTimeout((signal) => this.embedSingle(text, this._taskPassage, signal), "embedPassage");
   }
 
+  // Note: embedBatchQuery/embedBatchPassage are NOT wrapped with withTimeout because
+  // they handle multiple texts in a single API call. The timeout would fire after
+  // EMBED_TIMEOUT_MS regardless of how many texts succeed. Individual text embedding
+  // within the batch is protected by the SDK's own timeout handling.
   async embedBatchQuery(texts: string[]): Promise<number[][]> {
     return this.embedMany(texts, this._taskQuery);
   }
