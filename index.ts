@@ -360,6 +360,7 @@ function getExtensionApiImportSpecifiers(): string[] {
 
   specifiers.push(toImportSpecifier("/usr/lib/node_modules/openclaw/dist/extensionAPI.js"));
   specifiers.push(toImportSpecifier("/usr/local/lib/node_modules/openclaw/dist/extensionAPI.js"));
+  specifiers.push(toImportSpecifier("/opt/homebrew/lib/node_modules/openclaw/dist/extensionAPI.js"));
 
   return [...new Set(specifiers.filter(Boolean))];
 }
