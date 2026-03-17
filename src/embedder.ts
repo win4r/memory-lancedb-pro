@@ -755,14 +755,9 @@ export class Embedder {
 
           return finalEmbedding;
         } catch (chunkError) {
-          // If chunking fails, throw the original error
-          console.warn(`Chunking failed, using original error:`, chunkError);
-          const friendly = formatEmbeddingProviderError(error, {
-            baseURL: this._baseURL,
-            model: this._model,
-            mode: "single",
-          });
-          throw new Error(friendly, { cause: error });
+          // Preserve and surface the more specific chunkError
+          console.warn(`Chunking failed:`, chunkError);
+          throw chunkError;
         }
       }
 

@@ -271,7 +271,7 @@ export function smartChunk(text: string, embedderModel?: string): ChunkResult {
   const divisor = cjkHeavy ? CJK_CHAR_TOKEN_DIVISOR : 1;
 
   const config: ChunkerConfig = {
-    maxChunkSize: Math.max(1000, Math.floor(base * 0.7 / divisor)),
+    maxChunkSize: Math.max(200, Math.floor(base * 0.7 / divisor)),
     overlapSize: Math.max(0, Math.floor(base * 0.05 / divisor)),
     minChunkSize: Math.max(100, Math.floor(base * 0.1 / divisor)),
     semanticSplit: true,
