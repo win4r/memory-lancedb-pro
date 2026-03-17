@@ -22,7 +22,7 @@ import { createMigrator } from "./src/migrate.js";
 import { registerAllMemoryTools } from "./src/tools.js";
 import { appendSelfImprovementEntry, ensureSelfImprovementLearningFiles } from "./src/self-improvement-files.js";
 import type { MdMirrorWriter } from "./src/tools.js";
-import { shouldSkipRetrieval } from "./src/adaptive-retrieval.js";
+import { shouldSkipRetrieval, isQueryTooLongForRecall } from "./src/adaptive-retrieval.js";
 import { runWithReflectionTransientRetryOnce } from "./src/reflection-retry.js";
 import { resolveReflectionSessionSearchDirs, stripResetSuffix } from "./src/session-recovery.js";
 import {
@@ -79,6 +79,7 @@ interface PluginConfig {
   autoRecall?: boolean;
   autoRecallMinLength?: number;
   autoRecallMinRepeated?: number;
+  autoRecallMaxQueryChars?: number;
   captureAssistant?: boolean;
   retrieval?: {
     mode?: "hybrid" | "vector";
@@ -2076,10 +2077,17 @@ const memoryLanceDBProPlugin = {
     // Default is OFF to prevent the model from accidentally echoing injected context.
     if (config.autoRecall === true) {
       api.on("before_agent_start", async (event, ctx) => {
-        if (
-          !event.prompt ||
-          shouldSkipRetrieval(event.prompt, config.autoRecallMinLength)
-        ) {
+        // Skip if no prompt, too short, or too long
+        if (!event.prompt) return;
+        
+        // Check max query length to prevent context overflow
+        const maxQueryChars = config.autoRecallMaxQueryChars ?? 4000;
+        if (maxQueryChars > 0 && isQueryTooLongForRecall(event.prompt, maxQueryChars)) {
+          api.logger.debug?.(`memory-lancedb-pro: skipping auto-recall for long prompt (${event.prompt.length} chars, max ${maxQueryChars})`);
+          return;
+        }
+        
+        if (shouldSkipRetrieval(event.prompt, config.autoRecallMinLength)) {
           return;
         }
 
@@ -3372,6 +3380,7 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     autoRecall: cfg.autoRecall === true,
     autoRecallMinLength: parsePositiveInt(cfg.autoRecallMinLength),
     autoRecallMinRepeated: parsePositiveInt(cfg.autoRecallMinRepeated),
+    autoRecallMaxQueryChars: parsePositiveInt(cfg.autoRecallMaxQueryChars) ?? 4000,
     captureAssistant: cfg.captureAssistant === true,
     retrieval: typeof cfg.retrieval === "object" && cfg.retrieval !== null ? cfg.retrieval as any : undefined,
     decay: typeof cfg.decay === "object" && cfg.decay !== null ? cfg.decay as any : undefined,

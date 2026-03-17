@@ -105,6 +105,13 @@
         "default": 0,
         "description": "Minimum number of turns before the same memory can be recalled again in the same session. Set to 0 to disable deduplication (default behavior: inject all memories)."
       },
+      "autoRecallMaxQueryChars": {
+        "type": "integer",
+        "minimum": 100,
+        "maximum": 100000,
+        "default": 4000,
+        "description": "Maximum prompt length (in characters) to trigger auto-recall. Prompts longer than this will skip auto-recall to prevent context overflow. Default: 4000. Set to 0 to disable."
+      },
       "captureAssistant": {
         "type": "boolean"
       },
@@ -616,6 +623,11 @@
     "autoRecallMinRepeated": {
       "label": "Auto-Recall Min Repeated",
       "help": "Minimum number of conversation turns before a specific memory can be re-injected in the same session.",
+      "advanced": true
+    },
+    "autoRecallMaxQueryChars": {
+      "label": "Auto-Recall Max Query Chars",
+      "help": "Maximum prompt length to trigger auto-recall. Longer prompts skip auto-recall to prevent context overflow. Default: 4000 chars.",
       "advanced": true
     },
     "captureAssistant": {

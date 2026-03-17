@@ -95,3 +95,26 @@ export function shouldSkipRetrieval(query: string, minLength?: number): boolean 
   // Default: do retrieve
   return false;
 }
+
+/**
+ * Truncate query for embedding to avoid context overflow.
+ * Long pastes don't need full-text embedding - first 512 chars are sufficient for recall.
+ * @param query The raw query text
+ * @param maxChars Maximum characters to keep (default: 512)
+ * @returns Truncated query
+ */
+export function truncateQueryForEmbedding(query: string, maxChars: number = 512): string {
+  if (query.length <= maxChars) return query;
+  return query.slice(0, maxChars);
+}
+
+/**
+ * Check if query exceeds max length threshold for auto-recall.
+ * Returns true if query is too long and recall should be skipped.
+ * @param query The raw prompt text
+ * @param maxChars Maximum characters allowed (default: 4000)
+ */
+export function isQueryTooLongForRecall(query: string, maxChars: number = 4000): boolean {
+  const normalized = normalizeQuery(query);
+  return normalized.length > maxChars;
+}

@@ -11,6 +11,7 @@ import {
   parseAccessMetadata,
 } from "./access-tracker.js";
 import { filterNoise } from "./noise-filter.js";
+import { truncateQueryForEmbedding } from "./adaptive-retrieval.js";
 import type { DecayEngine, DecayableMemory } from "./decay-engine.js";
 import type { TierManager } from "./tier-manager.js";
 import {
@@ -407,7 +408,9 @@ export class MemoryRetriever {
     scopeFilter?: string[],
     category?: string,
   ): Promise<RetrievalResult[]> {
-    const queryVector = await this.embedder.embedQuery(query);
+    // Truncate query for embedding to avoid context overflow with long messages
+    const truncatedQuery = truncateQueryForEmbedding(query);
+    const queryVector = await this.embedder.embedQuery(truncatedQuery);
     const results = await this.store.vectorSearch(
       queryVector,
       limit,
@@ -459,7 +462,9 @@ export class MemoryRetriever {
     );
 
     // Compute query embedding once, reuse for vector search + reranking
-    const queryVector = await this.embedder.embedQuery(query);
+    // Truncate query for embedding to avoid context overflow with long messages
+    const truncatedQuery = truncateQueryForEmbedding(query);
+    const queryVector = await this.embedder.embedQuery(truncatedQuery);
 
     // Run vector and BM25 searches in parallel
     const [vectorResults, bm25Results] = await Promise.all([
