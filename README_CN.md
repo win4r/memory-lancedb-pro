@@ -500,13 +500,38 @@ git clone https://github.com/CortexReach/memory-lancedb-pro-skill.git ~/.opencla
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `smartExtraction` | boolean | `true` | 启用/禁用 LLM 驱动的 6 类提取 |
-| `llm.apiKey` | string | *（回退到 `embedding.apiKey`）* | LLM 服务商 API Key |
+| `smartExtraction` | boolean | `true` | 是否启用 LLM 智能 6 类别提取 |
+| `llm.auth` | string | `api-key` | `api-key` 使用 `llm.apiKey` / `embedding.apiKey`；`oauth` 默认使用 plugin 级 OAuth token 文件 |
+| `llm.apiKey` | string | *（复用 `embedding.apiKey`）* | LLM 提供商 API Key |
 | `llm.model` | string | `openai/gpt-oss-120b` | LLM 模型名称 |
-| `llm.baseURL` | string | *（回退到 `embedding.baseURL`）* | LLM API 端点 |
+| `llm.baseURL` | string | *（复用 `embedding.baseURL`）* | LLM API 端点 |
+| `llm.oauthProvider` | string | `openai-codex` | `llm.auth` 为 `oauth` 时使用的 OAuth provider id |
+| `llm.oauthPath` | string | `~/.openclaw/.memory-lancedb-pro/oauth.json` | `llm.auth` 为 `oauth` 时使用的 OAuth token 文件 |
 | `llm.timeoutMs` | number | `30000` | LLM 请求超时（毫秒） |
 | `extractMinMessages` | number | `2` | 触发提取的最小消息数 |
 | `extractMaxChars` | number | `8000` | 发送给 LLM 的最大字符数 |
+
+
+OAuth `llm` 配置（使用现有 Codex / ChatGPT 登录缓存来发送 LLM 请求）：
+```json
+{
+  "llm": {
+    "auth": "oauth",
+    "oauthProvider": "openai-codex",
+    "model": "gpt-5.4",
+    "oauthPath": "${HOME}/.openclaw/.memory-lancedb-pro/oauth.json",
+    "timeoutMs": 30000
+  }
+}
+```
+
+`llm.auth: "oauth"` 说明：
+
+- `llm.oauthProvider` 当前仅支持 `openai-codex`。
+- OAuth token 默认存放在 `~/.openclaw/.memory-lancedb-pro/oauth.json`。
+- 如需自定义路径，可设置 `llm.oauthPath`。
+- `auth login` 会在 OAuth 文件旁边快照原来的 `api-key` 模式 `llm` 配置；`auth logout` 在可用时会恢复这份快照。
+- 从 `api-key` 切到 `oauth` 时不会自动沿用 `llm.baseURL`；只有在你明确需要自定义 ChatGPT/Codex 兼容后端时，才应在 `oauth` 模式下手动设置。
 
 </details>
 
@@ -545,6 +570,9 @@ git clone https://github.com/CortexReach/memory-lancedb-pro-skill.git ~/.opencla
 openclaw memory-pro list [--scope global] [--category fact] [--limit 20] [--json]
 openclaw memory-pro search "查询" [--scope global] [--limit 10] [--json]
 openclaw memory-pro stats [--scope global] [--json]
+openclaw memory-pro auth login [--provider openai-codex] [--model gpt-5.4] [--oauth-path /abs/path/oauth.json]
+openclaw memory-pro auth status
+openclaw memory-pro auth logout
 openclaw memory-pro delete <id>
 openclaw memory-pro delete-bulk --scope global [--before 2025-01-01] [--dry-run]
 openclaw memory-pro export [--scope global] [--output memories.json]
@@ -553,6 +581,14 @@ openclaw memory-pro reembed --source-db /path/to/old-db [--batch-size 32] [--ski
 openclaw memory-pro upgrade [--dry-run] [--batch-size 10] [--no-llm] [--limit N] [--scope SCOPE]
 openclaw memory-pro migrate check|run|verify [--source /path]
 ```
+
+OAuth 登录流程：
+
+1. 运行 `openclaw memory-pro auth login`
+2. 如果省略 `--provider` 且当前终端可交互，CLI 会先显示 OAuth provider 选择器
+3. 命令会打印授权 URL，并在未指定 `--no-browser` 时自动打开浏览器
+4. 回调成功后，命令会保存 plugin OAuth 文件（默认：`~/.openclaw/.memory-lancedb-pro/oauth.json`）、为 logout 快照原来的 `api-key` 模式 `llm` 配置，并把插件 `llm` 配置切换为 OAuth 字段（`auth`、`oauthProvider`、`model`、`oauthPath`）
+5. `openclaw memory-pro auth logout` 会删除这份 OAuth 文件，并在存在快照时恢复之前的 `api-key` 模式 `llm` 配置
 
 ---
 
