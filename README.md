@@ -503,7 +503,7 @@ When `smartExtraction` is enabled (default: `true`), the plugin uses an LLM to i
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `smartExtraction` | boolean | `true` | Enable/disable LLM-powered 6-category extraction |
-| `llm.auth` | string | `api-key` | `api-key` uses `llm.apiKey` / `embedding.apiKey`; `oauth` uses a plugin-scoped OAuth token file by default |
+| `llm.auth` | string | `api-key` | `api-key` uses `llm.apiKey` / `embedding.apiKey`; `oauth` uses the plugin OAuth token file (path stored in `llm.oauthPath`) |
 | `llm.apiKey` | string | *(falls back to `embedding.apiKey`)* | API key for the LLM provider |
 | `llm.model` | string | `openai/gpt-oss-120b` | LLM model name |
 | `llm.baseURL` | string | *(falls back to `embedding.baseURL`)* | LLM API endpoint |
@@ -535,7 +535,7 @@ OAuth `llm` config (use existing Codex / ChatGPT login cache for LLM calls):
 Notes for `llm.auth: "oauth"`:
 
 - `llm.oauthProvider` is set when you authenticate with an OAuth provider.
-- OAuth tokens are stored in `~/.openclaw/.memory-lancedb-pro/oauth.json`.
+- auth login writes the OAuth token file (path stored in llm.oauthPath).
 - You can set `llm.oauthPath` if you want to store that file somewhere else.
 - `auth login` snapshots the previous api-key `llm` config next to the OAuth file, and `auth logout` restores that snapshot when available.
 - Switching from `api-key` to `oauth` does not automatically carry over `llm.baseURL`. Set it manually in OAuth mode only when you intentionally want a custom ChatGPT/Codex-compatible backend.
@@ -594,7 +594,7 @@ OAuth login flow:
 1. Run `openclaw memory-pro auth login`
 2. If `--provider` is omitted in an interactive terminal, the CLI shows an OAuth provider picker before opening the browser
 3. The command prints an authorization URL and opens your browser unless `--no-browser` is set
-4. After the callback succeeds, the command saves the plugin OAuth file (default: `~/.openclaw/.memory-lancedb-pro/oauth.json`), snapshots the previous api-key `llm` config for logout, and replaces the plugin `llm` config with OAuth settings (`auth`, `oauthProvider`, `model`, `oauthPath`)
+4. After the callback succeeds, the command saves the OAuth token file (path stored in `llm.oauthPath`), snapshots the previous api-key `llm` config for logout, and replaces the plugin `llm` config with OAuth settings (`auth`, `oauthProvider`, `model`, `oauthPath`)
 5. `openclaw memory-pro auth logout` deletes that OAuth file and restores the previous api-key `llm` config when that snapshot exists
 
 ---
