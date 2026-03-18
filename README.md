@@ -114,9 +114,9 @@ Add to your `openclaw.json`:
 }
 ```
 
-**Why these defaults?**
+**Why these recommended settings?**
 - `autoCapture` + `smartExtraction` → your agent learns from every conversation automatically
-- `autoRecall` → relevant memories are injected before each reply
+- `autoRecall` → relevant memories are injected before each reply (manifest default is OFF; enable it here if desired)
 - `extractMinMessages: 2` → extraction triggers in normal two-turn chats
 - `sessionMemory.enabled: false` → avoids polluting retrieval with session summaries on day one
 

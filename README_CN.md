@@ -114,9 +114,9 @@ npm i memory-lancedb-pro@beta
 }
 ```
 
-**为什么用这些默认值？**
+**为什么用这些推荐设置？**
 - `autoCapture` + `smartExtraction` → 智能体自动从每次对话中学习
-- `autoRecall` → 相关记忆在每次回复前自动注入
+- `autoRecall` → 相关记忆在每次回复前自动注入（manifest 中默认关闭，如需可在此启用）
 - `extractMinMessages: 2` → 正常两轮对话即触发提取
 - `sessionMemory.enabled: false` → 避免会话摘要在初期污染检索结果
 
