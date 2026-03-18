@@ -340,6 +340,40 @@ async function run() {
   );
   assert.match(formattedVoyage, /^Failed to generate embedding from Voyage:/, formattedVoyage);
 
+  // Matryoshka error: local model that rejects dimensions parameter
+  const matryoshkaError1 = formatEmbeddingProviderError(
+    new Error("400 Model does not support matryoshka representation"),
+    {
+      baseURL: "http://127.0.0.1:8000/v1",
+      model: "Qwen3-Embedding-0.6B",
+    },
+  );
+  assert.match(matryoshkaError1, /rejected dimensions parameter/i, matryoshkaError1);
+  assert.match(matryoshkaError1, /matryoshka representation/i, matryoshkaError1);
+  assert.match(matryoshkaError1, /omitDimensions.*true/i, matryoshkaError1);
+
+  // Matryoshka error: "dimensions not supported" variant
+  const matryoshkaError2 = formatEmbeddingProviderError(
+    new Error("unknown parameter: dimensions"),
+    {
+      baseURL: "http://localhost:11434/v1",
+      model: "nomic-embed-text",
+    },
+  );
+  assert.match(matryoshkaError2, /rejected dimensions parameter/i, matryoshkaError2);
+  assert.match(matryoshkaError2, /omitDimensions.*true/i, matryoshkaError2);
+
+  // Matryoshka error: "dimensions not supported" phrase variant
+  const matryoshkaError3 = formatEmbeddingProviderError(
+    new Error("the dimensions parameter is not supported by this model"),
+    {
+      baseURL: "http://127.0.0.1:8000/v1",
+      model: "bge-m3",
+    },
+  );
+  assert.match(matryoshkaError3, /rejected dimensions parameter/i, matryoshkaError3);
+  assert.match(matryoshkaError3, /omitDimensions.*true/i, matryoshkaError3);
+
   console.log("OK: embedder auth/network error hints verified");
 }
 
