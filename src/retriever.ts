@@ -123,6 +123,7 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   filterNoise: true,
   rerankModel: "jina-reranker-v3",
   rerankEndpoint: "https://api.jina.ai/v1/rerank",
+  timeoutMs: 5000,
   lengthNormAnchor: 500,
   hardMinScore: 0.35,
   timeDecayHalfLifeDays: 60,
@@ -677,7 +678,8 @@ export class MemoryRetriever {
 
         // Timeout: 5 seconds to prevent stalling retrieval pipeline
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5000);
+        const timeoutMs = this.config.timeoutMs ?? 5000;
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
         const response = await fetch(endpoint, {
           method: "POST",
@@ -745,7 +747,9 @@ export class MemoryRetriever {
         }
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
-          console.warn("Rerank API timed out (5s), falling back to cosine");
+          console.warn(
+            `Rerank API timed out (${this.config.timeoutMs ?? 5000}ms), falling back to cosine`,
+          );
         } else {
           console.warn("Rerank API failed, falling back to cosine:", error);
         }
