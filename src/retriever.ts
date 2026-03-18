@@ -52,6 +52,9 @@ export interface RetrievalConfig {
   rerankProvider?:
     | "jina"
     | "siliconflow"
+  /** Rerank request timeout in milliseconds. Default: 5000 (5 seconds).
+   *  Increase this for slow local rerank models that take longer to process requests. */
+  rerankTimeoutMs?: number;
     | "voyage"
     | "pinecone"
     | "dashscope"
@@ -121,6 +124,7 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   filterNoise: true,
   rerankModel: "jina-reranker-v3",
   rerankEndpoint: "https://api.jina.ai/v1/rerank",
+  rerankTimeoutMs: 5000,
   lengthNormAnchor: 500,
   hardMinScore: 0.35,
   timeDecayHalfLifeDays: 60,
@@ -673,9 +677,9 @@ export class MemoryRetriever {
           results.length,
         );
 
-        // Timeout: 5 seconds to prevent stalling retrieval pipeline
+        // Timeout: configurable via rerankTimeoutMs, default 5 seconds to prevent stalling retrieval pipeline
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5000);
+        const timeout = setTimeout(() => controller.abort(), this.config.rerankTimeoutMs ?? 5000);
 
         const response = await fetch(endpoint, {
           method: "POST",
