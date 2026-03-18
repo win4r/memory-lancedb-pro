@@ -8,7 +8,7 @@ const { Embedder } = jiti("../src/embedder.ts");
 const { smartChunk } = jiti("../src/chunker.ts");
 
 function generateCJKText(charCount) {
-  const chars = "中文字符测试数据内容关键词信息处理系统计算机软件硬件网络数据库服务器客户端浏览器应用程序编程语言算法数据结构人工智能机器学习深度学习神经网络".split("");
+  const chars = "中文字符测试数据内容关键词信息处理系统计算机软件硬件网络数据库服务器客户端浏览器应用程序编程语言算法数据结构人工智能机器学习深度学习神经网络。".split("");
   let text = "";
   for (let i = 0; i < charCount; i++) text += chars[i % chars.length];
   return text;
@@ -51,8 +51,88 @@ async function withServer(handler, fn) {
   }
 }
 
+async function testSingleChunkFallbackTerminates() {
+  console.log("Test 1: single-chunk fallback terminates instead of looping");
+
+  let callCount = 0;
+  await withServer((payload, _req, res) => {
+    callCount++;
+    const input = Array.isArray(payload.input) ? payload.input[0] : payload.input;
+    if (typeof input === "string" && input.length > 100) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "Input length exceeds maximum tokens (max 8192)", code: "context_length_exceeded" } }));
+      return;
+    }
+
+    const dims = 1024;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ data: [{ embedding: Array.from({ length: dims }, () => 1), index: 0 }] }));
+  }, async ({ baseURL }) => {
+    const embedder = new Embedder({
+      provider: "openai-compatible",
+      apiKey: "test-key",
+      model: "mxbai-embed-large",
+      baseURL,
+      dimensions: 1024,
+    });
+
+    await assert.rejects(
+      () => embedder.embedPassage(generateCJKText(3000)),
+      (error) => {
+        assert.match(error.message, /Failed to embed: input too large for model context after 3 retries/i);
+        assert(callCount < 20, `Expected bounded retries, got ${callCount}`);
+        return true;
+      }
+    );
+  });
+
+  console.log(`  API calls before termination: ${callCount}`);
+  console.log("  PASSED\n");
+}
+
+async function testDepthLimitTermination() {
+  console.log("Test 2: depth limit terminates repeated forced reductions");
+
+  await withServer((_payload, _req, res) => {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "Input length exceeds maximum tokens (max 8192)", code: "context_length_exceeded" } }));
+  }, async ({ baseURL }) => {
+    const embedder = new Embedder({
+      provider: "openai-compatible",
+      apiKey: "test-key",
+      model: "mxbai-embed-large",
+      baseURL,
+      dimensions: 1024,
+    });
+
+    await assert.rejects(
+      () => embedder.embedPassage(generateCJKText(220)),
+      (error) => {
+        assert.match(error.message, /Failed to embed: input too large for model context after 3 retries|chunking couldn't reduce input size enough/i);
+        return true;
+      }
+    );
+  });
+
+  console.log("  PASSED\n");
+}
+
+async function testCjkAwareChunkSizing() {
+  console.log("Test 3: CJK-aware chunk sizing produces more chunks than Latin text for same model budget");
+  const cjkText = generateCJKText(5000);
+  const latinText = "english text sentence. ".repeat(220);
+  const cjkResult = smartChunk(cjkText, "mxbai-embed-large");
+  const latinResult = smartChunk(latinText, "mxbai-embed-large");
+
+  assert(cjkResult.chunkCount > 1, "Expected multiple chunks for long CJK text");
+  assert(cjkResult.chunks[0].length < latinResult.chunks[0].length, "Expected smaller CJK chunks than Latin chunks");
+  console.log(`  CJK first chunk: ${cjkResult.chunks[0].length} chars`);
+  console.log(`  Latin first chunk: ${latinResult.chunks[0].length} chars`);
+  console.log("  PASSED\n");
+}
+
 async function testChunkErrorSurfaced() {
-  console.log("Test 1: chunkError is surfaced instead of generic context_length_exceeded wrapper");
+  console.log("Test 4: chunkError is surfaced instead of generic context_length_exceeded wrapper");
 
   await withServer((payload, _req, res) => {
     const input = Array.isArray(payload.input) ? payload.input[0] : payload.input;
@@ -87,18 +167,18 @@ async function testChunkErrorSurfaced() {
 }
 
 async function testSmallContextChunking() {
-  console.log("Test 2: small-context model no longer keeps a 1000-char hard floor");
+  console.log("Test 5: small-context model no longer keeps a 1000-char hard floor");
   const text = generateCJKText(2000);
   const result = smartChunk(text, "all-MiniLM-L6-v2");
   assert(result.chunkCount > 1, "Expected multiple chunks for small-context CJK text");
   const maxChunkLen = Math.max(...result.chunks.map((c) => c.length));
-  assert(maxChunkLen < 300, `Expected chunk size < 300 chars, got ${maxChunkLen}`);
+  assert(maxChunkLen <= 200, `Expected chunk size <= 200 chars after clamp, got ${maxChunkLen}`);
   console.log(`  Largest chunk: ${maxChunkLen} chars`);
   console.log("  PASSED\n");
 }
 
 async function testTimeoutAbortPropagation() {
-  console.log("Test 3: timeout abort propagates to underlying request path");
+  console.log("Test 6: timeout abort propagates to underlying request path");
 
   await withServer(async (_payload, req, res) => {
     await new Promise((resolve) => setTimeout(resolve, 11_000));
@@ -130,7 +210,7 @@ async function testTimeoutAbortPropagation() {
 }
 
 async function testBatchEmbeddingStillWorks() {
-  console.log("Test 4: batch embedding still works without withTimeout wrapper");
+  console.log("Test 7: batch embedding still works without withTimeout wrapper");
 
   await withServer((_payload, _req, res) => {
     const dims = 1024;
@@ -158,6 +238,9 @@ async function testBatchEmbeddingStillWorks() {
 
 async function run() {
   console.log("Running regression tests for PR #238...\n");
+  await testSingleChunkFallbackTerminates();
+  await testDepthLimitTermination();
+  await testCjkAwareChunkSizing();
   await testChunkErrorSurfaced();
   await testSmallContextChunking();
   await testTimeoutAbortPropagation();
