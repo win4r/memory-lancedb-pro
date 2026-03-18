@@ -533,33 +533,11 @@ export class Embedder {
     return this.clients.length;
   }
 
-  /** FR-05: Wrap a promise with a global timeout using AbortSignal for TRUE cancellation.
-   * @param promiseFactory - A function that receives an AbortSignal and returns a promise
-   */
-  private withTimeout<T>(promiseFactory: (signal: AbortSignal) => Promise<T>, label: string): Promise<T> {
+  /** Wrap a single embedding operation with a global timeout via AbortSignal. */
+  private withTimeout<T>(promiseFactory: (signal: AbortSignal) => Promise<T>, _label: string): Promise<T> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS);
-    
-    // Create the promise with the signal
-    const promise = promiseFactory(controller.signal);
-    
-    // Race between the original promise and timeout
-    // When timeout fires, controller.abort() will:
-    // 1. Trigger the abort event below to reject
-    // 2. If embedWithRetry received the signal, it will cancel the underlying HTTP request
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      controller.signal.addEventListener('abort', () => {
-        clearTimeout(timeoutId);
-        reject(new Error(
-          `[memory-lancedb-pro] ${label} timed out after ${EMBED_TIMEOUT_MS}ms`
-        ));
-      });
-    });
-    
-    return Promise.race([promise, timeoutPromise])
-      .finally(() => {
-        clearTimeout(timeoutId);
-      }) as Promise<T>;
+    return promiseFactory(controller.signal).finally(() => clearTimeout(timeoutId));
   }
 
   // --------------------------------------------------------------------------
@@ -586,11 +564,11 @@ export class Embedder {
   // --------------------------------------------------------------------------
 
   async embedQuery(text: string): Promise<number[]> {
-    return this.withTimeout((signal) => this.embedSingle(text, this._taskQuery, signal), "embedQuery");
+    return this.withTimeout((signal) => this.embedSingle(text, this._taskQuery, 0, signal), "embedQuery");
   }
 
   async embedPassage(text: string): Promise<number[]> {
-    return this.withTimeout((signal) => this.embedSingle(text, this._taskPassage, signal), "embedPassage");
+    return this.withTimeout((signal) => this.embedSingle(text, this._taskPassage, 0, signal), "embedPassage");
   }
 
   // Note: embedBatchQuery/embedBatchPassage are NOT wrapped with withTimeout because
