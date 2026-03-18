@@ -352,6 +352,13 @@ export function formatEmbeddingProviderError(
     return `Embedding provider unreachable (${detailText}). ${hint}`;
   }
 
+  // Detect matryoshka representation error from local models that reject dimensions parameter
+  if (/matryoshka|dimensions.*not\s*support|unknown.*param.*dimensions/i.test(raw)) {
+    return `Embedding provider rejected dimensions parameter (${detailText}). ` +
+      `This model does not support matryoshka representation. ` +
+      `Set "embedding.omitDimensions": true in your config to stop sending the dimensions parameter.`;
+  }
+
   return `${genericPrefix}${detailText}`;
 }
 
