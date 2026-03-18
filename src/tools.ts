@@ -760,7 +760,7 @@ export function registerMemoryForgetTool(
 ) {
   api.registerTool(
     (toolCtx) => {
-      const agentId = resolveAgentId((toolCtx as any)?.agentId, context.agentId) ?? "main";
+      const runtimeContext = resolveToolContext(context, toolCtx);
       return {
         name: "memory_forget",
       label: "Memory Forget",
@@ -787,7 +787,7 @@ export function registerMemoryForgetTool(
         };
 
         try {
-          const agentId = resolveRuntimeAgentId(context.agentId, runtimeCtx);
+          const agentId = resolveRuntimeAgentId(runtimeContext.agentId, runtimeCtx);
           // Determine accessible scopes
           let scopeFilter = resolveScopeFilter(context.scopeManager, agentId);
           if (scope) {
@@ -920,7 +920,7 @@ export function registerMemoryUpdateTool(
 ) {
   api.registerTool(
     (toolCtx) => {
-      const agentId = resolveAgentId((toolCtx as any)?.agentId, context.agentId) ?? "main";
+      const runtimeContext = resolveToolContext(context, toolCtx);
       return {
         name: "memory_update",
       label: "Memory Update",
@@ -963,7 +963,7 @@ export function registerMemoryUpdateTool(
           }
 
           // Determine accessible scopes
-          const agentId = resolveRuntimeAgentId(context.agentId, runtimeCtx);
+          const agentId = resolveRuntimeAgentId(runtimeContext.agentId, runtimeCtx);
           const scopeFilter = resolveScopeFilter(context.scopeManager, agentId);
 
           // Resolve memoryId: if it doesn't look like a UUID, try search
@@ -1184,7 +1184,7 @@ export function registerMemoryStatsTool(
 ) {
   api.registerTool(
     (toolCtx) => {
-      const agentId = resolveAgentId((toolCtx as any)?.agentId, context.agentId) ?? "main";
+      const runtimeContext = resolveToolContext(context, toolCtx);
       return {
         name: "memory_stats",
       label: "Memory Statistics",
@@ -1200,7 +1200,7 @@ export function registerMemoryStatsTool(
         const { scope } = params as { scope?: string };
 
         try {
-          const agentId = resolveRuntimeAgentId(context.agentId, runtimeCtx);
+          const agentId = resolveRuntimeAgentId(runtimeContext.agentId, runtimeCtx);
           // Determine accessible scopes
           let scopeFilter = resolveScopeFilter(context.scopeManager, agentId);
           if (scope) {
@@ -1277,7 +1277,7 @@ export function registerMemoryListTool(
 ) {
   api.registerTool(
     (toolCtx) => {
-      const agentId = resolveAgentId((toolCtx as any)?.agentId, context.agentId) ?? "main";
+      const runtimeContext = resolveToolContext(context, toolCtx);
       return {
         name: "memory_list",
       label: "Memory List",
@@ -1315,7 +1315,7 @@ export function registerMemoryListTool(
         try {
           const safeLimit = clampInt(limit, 1, 50);
           const safeOffset = clampInt(offset, 0, 1000);
-          const agentId = resolveRuntimeAgentId(context.agentId, runtimeCtx);
+          const agentId = resolveRuntimeAgentId(runtimeContext.agentId, runtimeCtx);
 
           // Determine accessible scopes
           let scopeFilter = resolveScopeFilter(context.scopeManager, agentId);
