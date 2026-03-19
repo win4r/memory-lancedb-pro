@@ -42,6 +42,7 @@ import {
   isUserMdExclusiveMemory,
   type WorkspaceBoundaryConfig,
 } from "./workspace-boundary.js";
+import { inferAtomicBrandItemPreferenceSlot } from "./preference-slots.js";
 
 // ============================================================================
 // Constants
@@ -504,6 +505,26 @@ export class SmartExtractor {
 
     if (activeSimilar.length === 0) {
       return { decision: "create", reason: "No similar memories found" };
+    }
+
+    // Stage 1.5: Preference slot guard — same brand but different item
+    // should always be stored as a new memory, not merged/skipped.
+    // Example: "喜欢麦当劳的板烧鸡腿堡" and "喜欢麦当劳的麦辣鸡翅" are
+    // different preferences even though they share the same brand.
+    if (candidate.category === "preferences") {
+      const candidateSlot = inferAtomicBrandItemPreferenceSlot(candidate.content);
+      if (candidateSlot) {
+        const allDifferentItem = activeSimilar.every((r) => {
+          const existingSlot = inferAtomicBrandItemPreferenceSlot(r.entry.text);
+          // If existing is not a brand-item preference, let LLM decide
+          if (!existingSlot) return false;
+          // Same brand, different item → should not be deduped
+          return existingSlot.brand === candidateSlot.brand && existingSlot.item !== candidateSlot.item;
+        });
+        if (allDifferentItem) {
+          return { decision: "create", reason: "Same brand but different item-level preference (preference-slot guard)" };
+        }
+      }
     }
 
     // Stage 2: LLM decision
