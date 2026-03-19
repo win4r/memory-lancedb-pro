@@ -96,23 +96,185 @@ test("normalizePreferenceToken: strips punctuation and lowercases", () => {
 });
 
 // ---------------------------------------------------------------------------
-// category guard integration (verify "preferences" plural is used)
+// normalizePreferenceToken: English article stripping
 // ---------------------------------------------------------------------------
 
-test("smart-extractor uses 'preferences' (plural) for category check", async () => {
-  const { readFileSync } = await import("node:fs");
-  const src = readFileSync(
-    new URL("../src/smart-extractor.ts", import.meta.url),
-    "utf8",
-  );
-  // Must contain the plural form in the preference-slot guard
-  assert.ok(
-    src.includes('candidate.category === "preferences"'),
-    'Guard should check for "preferences" (plural), not "preference" (singular)',
-  );
-  // Must NOT contain the singular typo
-  assert.ok(
-    !src.includes('candidate.category === "preference"'),
-    'Should not have the singular "preference" typo',
-  );
+test("normalizePreferenceToken: strips English articles (the/a/an)", () => {
+  assert.equal(normalizePreferenceToken("the Big Mac"), "bigmac");
+  assert.equal(normalizePreferenceToken("Big Mac"), "bigmac");
+  assert.equal(normalizePreferenceToken("a Whopper"), "whopper");
+  assert.equal(normalizePreferenceToken("an Egg McMuffin"), "eggmcmuffin");
+});
+
+// ---------------------------------------------------------------------------
+// Dedup guard integration: SmartExtractor preference-slot guard behavior
+// ---------------------------------------------------------------------------
+
+const { SmartExtractor } = jiti("../src/smart-extractor.ts");
+
+function makeGuardExtractor({ vectorSearchResults, onDedupCalled }) {
+  const stored = [];
+  const store = {
+    async vectorSearch() {
+      return vectorSearchResults;
+    },
+    async store(entry) {
+      stored.push(entry);
+    },
+  };
+  const embedder = {
+    async embed() {
+      return [0.1, 0.2, 0.3];
+    },
+  };
+  const llm = {
+    async completeJson(_prompt, mode) {
+      if (mode === "extract-candidates") {
+        return {
+          memories: [
+            {
+              category: "preferences",
+              abstract: "食品偏好：麦当劳麦辣鸡翅",
+              overview: "## Preference\n- 喜欢麦当劳的麦辣鸡翅",
+              content: "喜欢麦当劳的麦辣鸡翅",
+            },
+          ],
+        };
+      }
+      if (mode === "dedup-decision") {
+        onDedupCalled();
+        return { decision: "create", reason: "LLM fallback" };
+      }
+      if (mode === "merge-memory") {
+        return { merged: "merged text" };
+      }
+      throw new Error("unexpected mode: " + mode);
+    },
+  };
+  return {
+    extractor: new SmartExtractor(store, embedder, llm, {
+      user: "User",
+      extractMinMessages: 1,
+      extractMaxChars: 8000,
+      defaultScope: "global",
+      log() {},
+      debugLog() {},
+    }),
+    stored,
+  };
+}
+
+test("dedup guard: same brand different item -> force create, skip LLM", async () => {
+  let dedupCalled = false;
+  const { extractor } = makeGuardExtractor({
+    vectorSearchResults: [
+      {
+        entry: {
+          id: "existing-1",
+          text: "喜欢麦当劳的薯条",
+          category: "preference",
+          scope: "global",
+          importance: 0.8,
+          timestamp: Date.now(),
+          metadata: JSON.stringify({ memory_category: "preferences" }),
+        },
+        score: 0.85,
+      },
+    ],
+    onDedupCalled: () => { dedupCalled = true; },
+  });
+
+  await extractor.extractAndPersist("喜欢麦当劳的麦辣鸡翅", "session-1", {
+    scope: "global",
+  });
+
+  assert.equal(dedupCalled, false, "LLM dedup should NOT be called when preference-slot guard triggers");
+});
+
+test("dedup guard: same brand same item -> falls through to LLM", async () => {
+  let dedupCalled = false;
+  const { extractor } = makeGuardExtractor({
+    vectorSearchResults: [
+      {
+        entry: {
+          id: "existing-1",
+          text: "喜欢麦当劳的麦辣鸡翅",
+          category: "preference",
+          scope: "global",
+          importance: 0.8,
+          timestamp: Date.now(),
+          metadata: JSON.stringify({ memory_category: "preferences" }),
+        },
+        score: 0.85,
+      },
+    ],
+    onDedupCalled: () => { dedupCalled = true; },
+  });
+
+  await extractor.extractAndPersist("喜欢麦当劳的麦辣鸡翅", "session-2", {
+    scope: "global",
+  });
+
+  assert.equal(dedupCalled, true, "LLM dedup SHOULD be called when same brand same item");
+});
+
+test("dedup guard: non-preference category -> skips guard, goes to LLM", async () => {
+  let dedupCalled = false;
+  const store = {
+    async vectorSearch() {
+      return [{
+        entry: {
+          id: "existing-1",
+          text: "用户住在北京",
+          category: "fact",
+          scope: "global",
+          importance: 0.8,
+          timestamp: Date.now(),
+          metadata: JSON.stringify({ memory_category: "entities" }),
+        },
+        score: 0.85,
+      }];
+    },
+    async store() {},
+  };
+  const embedder = {
+    async embed() { return [0.1, 0.2, 0.3]; },
+  };
+  const llm = {
+    async completeJson(_prompt, mode) {
+      if (mode === "extract-candidates") {
+        return {
+          memories: [{
+            category: "entities",
+            abstract: "用户喜欢北京烤鸭",
+            overview: "## Entity\n- 住在上海",
+            content: "用户喜欢北京烤鸭",
+          }],
+        };
+      }
+      if (mode === "dedup-decision") {
+        dedupCalled = true;
+        return { decision: "create", reason: "different location" };
+      }
+      if (mode === "merge-memory") {
+        return { merged: "merged" };
+      }
+      throw new Error("unexpected mode: " + mode);
+    },
+  };
+
+  const extractor = new SmartExtractor(store, embedder, llm, {
+    user: "User",
+    extractMinMessages: 1,
+    extractMaxChars: 8000,
+    defaultScope: "global",
+    log() {},
+    debugLog() {},
+  });
+
+  await extractor.extractAndPersist("用户住在上海", "session-3", {
+    scope: "global",
+  });
+
+  assert.equal(dedupCalled, true, "LLM dedup should be called for non-preference categories");
 });
