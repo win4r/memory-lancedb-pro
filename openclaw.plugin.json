@@ -43,6 +43,11 @@
             "type": "integer",
             "minimum": 1
           },
+          "requestDimensions": {
+            "type": "boolean",
+            "default": true,
+            "description": "Send the embedding dimensions field when set or inferred from the model"
+          },
           "taskQuery": {
             "type": "string",
             "description": "Embedding task for queries (provider-specific, e.g. Jina: retrieval.query)"
@@ -252,6 +257,12 @@
             "maximum": 10,
             "default": 3,
             "description": "Maximum half-life multiplier from access reinforcement. Prevents frequently accessed memories from becoming immortal."
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 5000,
+            "description": "Timeout for retrieval requests in milliseconds."
           }
         }
       },

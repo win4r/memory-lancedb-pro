@@ -114,9 +114,9 @@ Add to your `openclaw.json`:
 }
 ```
 
-**Why these defaults?**
+**Why these recommended settings?**
 - `autoCapture` + `smartExtraction` → your agent learns from every conversation automatically
-- `autoRecall` → relevant memories are injected before each reply
+- `autoRecall` → relevant memories are injected before each reply (manifest default is OFF; enable it here if desired)
 - `extractMinMessages: 2` → extraction triggers in normal two-turn chats
 - `sessionMemory.enabled: false` → avoids polluting retrieval with session summaries on day one
 
@@ -407,6 +407,7 @@ Query → BM25 FTS ─────┘
     "model": "jina-embeddings-v5-text-small",
     "baseURL": "https://api.jina.ai/v1",
     "dimensions": 1024,
+    "requestDimensions": true,
     "taskQuery": "retrieval.query",
     "taskPassage": "retrieval.passage",
     "normalized": true
@@ -424,6 +425,7 @@ Query → BM25 FTS ─────┘
     "rerankModel": "jina-reranker-v3",
     "rerankEndpoint": "https://api.jina.ai/v1/rerank",
     "rerankProvider": "jina",
+    "timeoutMs": 5000,
     "candidatePoolSize": 20,
     "recencyHalfLifeDays": 14,
     "recencyWeight": 0.1,
@@ -501,16 +503,21 @@ When `smartExtraction` is enabled (default: `true`), the plugin uses an LLM to i
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `smartExtraction` | boolean | `true` | Enable/disable LLM-powered 6-category extraction |
-| `llm.auth` | string | `api-key` | `api-key` uses `llm.apiKey` / `embedding.apiKey`; `oauth` uses a plugin-scoped OAuth token file by default |
+| `llm.auth` | string | `api-key` | `api-key` uses `llm.apiKey` / `embedding.apiKey`; `oauth` uses the plugin OAuth token file (path stored in `llm.oauthPath`) |
 | `llm.apiKey` | string | *(falls back to `embedding.apiKey`)* | API key for the LLM provider |
 | `llm.model` | string | `openai/gpt-oss-120b` | LLM model name |
 | `llm.baseURL` | string | *(falls back to `embedding.baseURL`)* | LLM API endpoint |
-| `llm.oauthProvider` | string | `openai-codex` | OAuth provider id used when `llm.auth` is `oauth` |
-| `llm.oauthPath` | string | `~/.openclaw/.memory-lancedb-pro/oauth.json` | OAuth token file used when `llm.auth` is `oauth` |
+| `llm.oauthProvider` | string | optional | OAuth provider id used when `llm.auth` is `oauth` |
+| `llm.oauthPath` | string | optional | OAuth token file used when `llm.auth` is `oauth` |
 | `llm.timeoutMs` | number | `30000` | LLM request timeout in milliseconds |
 | `extractMinMessages` | number | `2` | Minimum messages before extraction triggers |
 | `extractMaxChars` | number | `8000` | Maximum characters sent to the LLM |
 
+Additional config:
+- `embedding.requestDimensions` (default: `true`): include `embedding.dimensions` in the embedding request; disable for local or OpenAI-compatible endpoints that reject the field.
+- `retrieval.timeoutMs` (default: `5000`): timeout for cross-encoder rerank requests in milliseconds; slower local services may need higher values.
+
+For vLLM-style local deployments, see `docs/vllm-local-deployment.zh-CN.md`.
 
 OAuth `llm` config (use existing Codex / ChatGPT login cache for LLM calls):
 ```json
@@ -527,8 +534,8 @@ OAuth `llm` config (use existing Codex / ChatGPT login cache for LLM calls):
 
 Notes for `llm.auth: "oauth"`:
 
-- `llm.oauthProvider` is currently `openai-codex`.
-- OAuth tokens default to `~/.openclaw/.memory-lancedb-pro/oauth.json`.
+- `llm.oauthProvider` is set when you authenticate with an OAuth provider.
+- auth login writes the OAuth token file (path stored in llm.oauthPath).
 - You can set `llm.oauthPath` if you want to store that file somewhere else.
 - `auth login` snapshots the previous api-key `llm` config next to the OAuth file, and `auth logout` restores that snapshot when available.
 - Switching from `api-key` to `oauth` does not automatically carry over `llm.baseURL`. Set it manually in OAuth mode only when you intentionally want a custom ChatGPT/Codex-compatible backend.
@@ -587,7 +594,7 @@ OAuth login flow:
 1. Run `openclaw memory-pro auth login`
 2. If `--provider` is omitted in an interactive terminal, the CLI shows an OAuth provider picker before opening the browser
 3. The command prints an authorization URL and opens your browser unless `--no-browser` is set
-4. After the callback succeeds, the command saves the plugin OAuth file (default: `~/.openclaw/.memory-lancedb-pro/oauth.json`), snapshots the previous api-key `llm` config for logout, and replaces the plugin `llm` config with OAuth settings (`auth`, `oauthProvider`, `model`, `oauthPath`)
+4. After the callback succeeds, the command saves the OAuth token file (path stored in `llm.oauthPath`), snapshots the previous api-key `llm` config for logout, and replaces the plugin `llm` config with OAuth settings (`auth`, `oauthProvider`, `model`, `oauthPath`)
 5. `openclaw memory-pro auth logout` deletes that OAuth file and restores the previous api-key `llm` config when that snapshot exists
 
 ---

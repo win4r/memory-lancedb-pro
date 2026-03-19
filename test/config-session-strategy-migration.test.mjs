@@ -63,4 +63,41 @@ describe("sessionStrategy legacy compatibility mapping", () => {
     });
     assert.equal(parsed.embedding.chunking, false);
   });
+
+  it("defaults embedding.requestDimensions to true", () => {
+    const parsed = parsePluginConfig(baseConfig());
+    assert.equal(parsed.embedding.requestDimensions, true);
+  });
+
+  it("preserves explicit embedding.requestDimensions=false", () => {
+    const parsed = parsePluginConfig({
+      ...baseConfig(),
+      embedding: {
+        ...baseConfig().embedding,
+        requestDimensions: false,
+      },
+    });
+    assert.equal(parsed.embedding.requestDimensions, false);
+  });
+
+  it("defaults retrieval.timeoutMs to 5000", () => {
+    const parsed = parsePluginConfig(baseConfig());
+    assert.equal(parsed.retrieval?.timeoutMs, 5000);
+  });
+
+  it("preserves explicit retrieval.timeoutMs", () => {
+    const parsed = parsePluginConfig({
+      ...baseConfig(),
+      retrieval: { timeoutMs: 15000 },
+    });
+    assert.equal(parsed.retrieval?.timeoutMs, 15000);
+  });
+
+  it("falls back to 5000 when retrieval.timeoutMs is invalid", () => {
+    const parsed = parsePluginConfig({
+      ...baseConfig(),
+      retrieval: { timeoutMs: 0 },
+    });
+    assert.equal(parsed.retrieval?.timeoutMs, 5000);
+  });
 });

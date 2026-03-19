@@ -69,6 +69,7 @@ interface PluginConfig {
     model?: string;
     baseURL?: string;
     dimensions?: number;
+    requestDimensions?: boolean;
     taskQuery?: string;
     taskPassage?: string;
     normalized?: boolean;
@@ -97,6 +98,7 @@ interface PluginConfig {
       | "pinecone"
       | "dashscope"
       | "tei";
+    timeoutMs?: number;
     recencyHalfLifeDays?: number;
     recencyWeight?: number;
     filterNoise?: boolean;
@@ -1637,6 +1639,7 @@ const memoryLanceDBProPlugin = {
       model: config.embedding.model || "text-embedding-3-small",
       baseURL: config.embedding.baseURL,
       dimensions: config.embedding.dimensions,
+      requestDimensions: config.embedding.requestDimensions,
       taskQuery: config.embedding.taskQuery,
       taskPassage: config.embedding.taskPassage,
       normalized: config.embedding.normalized,
@@ -3362,6 +3365,10 @@ export function parsePluginConfig(value: unknown): PluginConfig {
       // Accept number, numeric string, or env-var string (e.g. "${EMBED_DIM}").
       // Also accept legacy top-level `dimensions` for convenience.
       dimensions: parsePositiveInt(embedding.dimensions ?? cfg.dimensions),
+      requestDimensions:
+        typeof embedding.requestDimensions === "boolean"
+          ? embedding.requestDimensions
+          : true,
       taskQuery:
         typeof embedding.taskQuery === "string"
           ? embedding.taskQuery
@@ -3386,7 +3393,12 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     autoRecallMinLength: parsePositiveInt(cfg.autoRecallMinLength),
     autoRecallMinRepeated: parsePositiveInt(cfg.autoRecallMinRepeated),
     captureAssistant: cfg.captureAssistant === true,
-    retrieval: typeof cfg.retrieval === "object" && cfg.retrieval !== null ? cfg.retrieval as any : undefined,
+    retrieval: typeof cfg.retrieval === "object" && cfg.retrieval !== null
+      ? {
+        ...(cfg.retrieval as Record<string, unknown>),
+        timeoutMs: parsePositiveInt((cfg.retrieval as Record<string, unknown>).timeoutMs) ?? 5000,
+      }
+      : { timeoutMs: 5000 },
     decay: typeof cfg.decay === "object" && cfg.decay !== null ? cfg.decay as any : undefined,
     tier: typeof cfg.tier === "object" && cfg.tier !== null ? cfg.tier as any : undefined,
     // Smart extraction config (Phase 1)

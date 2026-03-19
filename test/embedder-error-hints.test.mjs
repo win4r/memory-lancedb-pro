@@ -149,6 +149,22 @@ async function run() {
   });
   await genericEmbedder.embedPassage("hello");
 
+  const genericNoRequestDimensionsEmbedder = new Embedder({
+    provider: "openai-compatible",
+    apiKey: "test-key",
+    model: "custom-embed-model",
+    baseURL: "https://embeddings.example.invalid/v1",
+    dimensions: 384,
+    requestDimensions: false,
+  });
+  installMockEmbeddingClient(genericNoRequestDimensionsEmbedder, async (payload) => {
+    assert.equal(payload.encoding_format, "float");
+    assert.equal(payload.dimensions, undefined);
+    return createEmbeddingResponse(384);
+  });
+  const noRequestDimensionsEmbedding = await genericNoRequestDimensionsEmbedder.embedPassage("hello");
+  assert.equal(noRequestDimensionsEmbedding.length, 384);
+
   // voyage-4 should be detected as voyage-compatible via model name prefix,
   // even when baseURL is NOT api.voyageai.com (e.g. behind a proxy).
   const voyageProxyEmbedder = new Embedder({
@@ -223,6 +239,27 @@ async function run() {
         model: "custom-embed-model",
         baseURL,
         dimensions: 384,
+      });
+      await embedder.embedPassage("hello world");
+    },
+  );
+
+  await withEmbeddingCaptureServer(
+    (payload) => {
+      assert.equal(payload.encoding_format, "float", "generic profile should send encoding_format");
+      assert.equal(payload.dimensions, undefined, "generic profile should omit dimensions when requestDimensions=false");
+      assert.equal(payload.task, undefined, "generic profile should not send task");
+      assert.equal(payload.normalized, undefined, "generic profile should not send normalized");
+      return { body: createEmbeddingResponse(384) };
+    },
+    async ({ baseURL }) => {
+      const embedder = new Embedder({
+        provider: "openai-compatible",
+        apiKey: "test-key",
+        model: "custom-embed-model",
+        baseURL,
+        dimensions: 384,
+        requestDimensions: false,
       });
       await embedder.embedPassage("hello world");
     },

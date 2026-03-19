@@ -126,6 +126,48 @@ async function runTeiScenario() {
 
 await runTeiScenario();
 
+async function runTimeoutScenario() {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  let capturedDelay;
+
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return { results: [{ index: 0, relevance_score: 0.99 }] };
+    },
+  });
+
+  globalThis.setTimeout = (fn, delay, ...args) => {
+    capturedDelay = delay;
+    return originalSetTimeout(fn, 0, ...args);
+  };
+
+  try {
+    const timeoutMs = 1234;
+    const retriever = createRetriever(fakeStore, fakeEmbedder, {
+      ...retrieverConfig,
+      timeoutMs,
+    });
+    await retriever.retrieve({
+      query: "TESTMEM-20260306-092541",
+      limit: 5,
+      scopeFilter: ["global"],
+    });
+
+    assert.equal(
+      capturedDelay,
+      timeoutMs,
+      "configured timeoutMs should be used for rerank abort",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+  }
+}
+
+await runTimeoutScenario();
+
 console.log("OK: rerank regression test passed");
 
 const lexicalEntry = {

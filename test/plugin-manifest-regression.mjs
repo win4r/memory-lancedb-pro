@@ -82,14 +82,14 @@ assert.equal(
   "autoCapture schema default should match runtime default",
 );
 assert.equal(
-  manifest.configSchema.properties.embedding.properties.chunking.default,
+  manifest.configSchema.properties.embedding.properties.requestDimensions.default,
   true,
-  "embedding.chunking schema default should match runtime default",
+  "embedding.requestDimensions schema default should match runtime default",
 );
 assert.equal(
-  manifest.configSchema.properties.sessionMemory.properties.enabled.default,
-  false,
-  "sessionMemory.enabled schema default should match runtime default",
+  manifest.configSchema.properties.retrieval.properties.timeoutMs.default,
+  5000,
+  "retrieval.timeoutMs schema default should match runtime default",
 );
 assert.ok(
   manifest.configSchema.properties.retrieval.properties.rerankProvider.enum.includes("tei"),
