@@ -99,6 +99,9 @@ export interface EmbeddingConfig {
   normalized?: boolean;
   /** Enable automatic chunking for documents exceeding context limits (default: true) */
   chunking?: boolean;
+  /** When true, omit the dimensions parameter from embedding requests even if dimensions is set.
+   *  Use this for local models that reject the dimensions parameter with "matryoshka representation" errors. */
+  omitDimensions?: boolean;
 }
 
 // Known embedding model dimensions
@@ -284,6 +287,8 @@ export class Embedder {
 
   /** Optional requested dimensions to pass through to the embedding provider (OpenAI-compatible). */
   private readonly _requestDimensions?: number;
+  /** When true, omit the dimensions parameter even if _requestDimensions is set. */
+  private readonly _omitDimensions: boolean;
   /** Enable automatic chunking for long documents (default: true) */
   private readonly _autoChunk: boolean;
 
@@ -298,6 +303,7 @@ export class Embedder {
     this._taskPassage = config.taskPassage;
     this._normalized = config.normalized;
     this._requestDimensions = config.dimensions;
+    this._omitDimensions = config.omitDimensions === true;
     // Enable auto-chunking by default for better handling of long documents
     this._autoChunk = config.chunking !== false;
 
@@ -457,9 +463,9 @@ export class Embedder {
     if (this._normalized !== undefined) payload.normalized = this._normalized;
 
     // Some OpenAI-compatible providers support requesting a specific vector size.
-    // We only pass it through when explicitly configured to avoid breaking providers
-    // that reject unknown fields.
-    if (this._requestDimensions && this._requestDimensions > 0) {
+    // We only pass it through when explicitly configured, and allow explicitly
+    // omitting it for local providers/models that reject the dimensions field.
+    if (!this._omitDimensions && this._requestDimensions && this._requestDimensions > 0) {
       payload.dimensions = this._requestDimensions;
     }
 
