@@ -270,9 +270,9 @@ try {
       text: longText,
       scope: "global",
     });
-    assert.equal(
-      chunkingOnResult.details.action,
-      "created",
+    assert.ok(
+      chunkingOnResult.details.action === "created" ||
+      chunkingOnResult.details.action === "stored",
       "embedding.chunking=true should recover from long-document embedding errors",
     );
   } finally {

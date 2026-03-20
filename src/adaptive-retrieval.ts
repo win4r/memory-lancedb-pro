@@ -5,6 +5,30 @@
  * Saves embedding API calls and reduces noise injection.
  */
 
+// Control/system prompts that should never trigger retrieval.
+const CONTROL_PROMPT_SKIP_PATTERNS = [
+  /A new session was started via \/new or \/reset/i,
+  /Execute your Session Startup sequence now/i,
+  /(^|\n)\s*\/note\b/i,
+  /(^|\n)\s*NO_REPLY\s*$/i,
+  /(^|\n)\s*HEARTBEAT_OK\s*$/i,
+];
+
+// Weak continuation prompts that often rely on prior session context.
+const WEAK_CONTINUATION_PATTERNS = [
+  /^(?:那|那就|那你|你|请|請)?\s*(?:go ahead|continue|proceed|resume|carry on|keep going|do it|start|begin|next)\s*[.!?]?$/i,
+  /^(?:那|那就|那你|你|请|請)?\s*(?:继续|繼續|继续吧|繼續吧|接着|接著|接着来|接著來|然后|然後|然后呢|然後呢|下一步|开始|開始|开始吧|開始吧|往下|接下去|接下來)\s*[.!?？]*$/i,
+  /^[?？]+$/,
+];
+
+// Slightly broader than WEAK_CONTINUATION_PATTERNS, but used only for
+// continuity fallback.
+const WEAK_CARRY_FORWARD_PATTERNS = [
+  /^(?:嗯|嗯嗯|唔|呃|哦|噢)\s*[.!?？]*$/i,
+  /^(?:好|好的|好的呀|好吧|可以|行|行吧|ok|okay|sure|alright|got it)\s*[.!?？]*$/i,
+  /^[\p{Emoji}\s]+$/u,
+];
+
 // Queries that are clearly NOT memory-retrieval candidates
 const SKIP_PATTERNS = [
   // Greetings & pleasantries
@@ -61,6 +85,19 @@ function normalizeQuery(query: string): string {
   return result;
 }
 
+export function isWeakContinuationPrompt(query: string): boolean {
+  const trimmed = normalizeQuery(query);
+  if (!trimmed) return false;
+  return WEAK_CONTINUATION_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+export function shouldAttemptContinuityFallback(query: string): boolean {
+  const trimmed = normalizeQuery(query);
+  if (!trimmed) return false;
+  if (isWeakContinuationPrompt(trimmed)) return true;
+  return WEAK_CARRY_FORWARD_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
 /**
  * Determine if a query should skip memory retrieval.
  * Returns true if retrieval should be skipped.
@@ -69,6 +106,10 @@ function normalizeQuery(query: string): string {
  */
 export function shouldSkipRetrieval(query: string, minLength?: number): boolean {
   const trimmed = normalizeQuery(query);
+
+  if (CONTROL_PROMPT_SKIP_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+    return true;
+  }
 
   // Force retrieve if query has memory-related intent (checked FIRST,
   // before length check, so short CJK queries like "你记得吗" aren't skipped)
