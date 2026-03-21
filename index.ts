@@ -1721,6 +1721,7 @@ const memoryLanceDBProPlugin = {
     );
     const scopeManager = createScopeManager(config.scopes);
     const migrator = createMigrator(store);
+    const mdMirror = createMdMirrorWriter(api, config);
 
     // Initialize smart extraction
     let smartExtractor: SmartExtractor | null = null;
@@ -1774,6 +1775,19 @@ const memoryLanceDBProPlugin = {
           log: (msg: string) => api.logger.info(msg),
           debugLog: (msg: string) => api.logger.debug(msg),
           noiseBank,
+          onPersist: mdMirror
+            ? async (entry) => {
+              await mdMirror(
+                {
+                  text: entry.text,
+                  category: entry.category,
+                  scope: entry.scope,
+                  timestamp: entry.timestamp,
+                },
+                { source: entry.source, agentId: entry.agentId },
+              );
+            }
+            : undefined,
         });
 
         api.logger.info(
@@ -2052,12 +2066,6 @@ const memoryLanceDBProPlugin = {
         `memory-lancedb-pro: ingress before_message_write agent=${ctx.agentId || event.agentId || "unknown"} sessionKey=${ctx.sessionKey || event.sessionKey || "unknown"} role=${role} ${summarizeMessageContent(message?.content)}`,
       );
     });
-
-    // ========================================================================
-    // Markdown Mirror
-    // ========================================================================
-
-    const mdMirror = createMdMirrorWriter(api, config);
 
     // ========================================================================
     // Register Tools
@@ -2433,7 +2441,11 @@ const memoryLanceDBProPlugin = {
               const conversationText = cleanTexts.join("\n");
               const stats = await smartExtractor.extractAndPersist(
                 conversationText, sessionKey,
-                { scope: defaultScope, scopeFilter: accessibleScopes },
+                {
+                  scope: defaultScope,
+                  scopeFilter: accessibleScopes,
+                  persistMeta: { agentId },
+                },
               );
               if (stats.created > 0 || stats.merged > 0) {
                 api.logger.info(

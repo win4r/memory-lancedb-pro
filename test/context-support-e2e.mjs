@@ -64,6 +64,7 @@ async function runTest() {
     const workDir = mkdtempSync(path.join(tmpdir(), "ctx-support-e2e-"));
     const dbPath = path.join(workDir, "db");
     const logs = [];
+    const mirrorEvents = [];
     let dedupDecision = "support"; // controlled per scenario
     let dedupContextLabel = "evening";
 
@@ -147,7 +148,30 @@ async function runTest() {
             user: "User", extractMinMessages: 1, extractMaxChars: 8000,
             defaultScope: "test",
             log: (msg) => logs.push(msg),
+            onPersist: (event) => mirrorEvents.push(event),
         });
+
+        // ----------------------------------------------------------------
+        // Scenario 0: create — should create a new entry and mirror event
+        // ----------------------------------------------------------------
+        console.log("Test 0: create decision writes compatibility mirror event...");
+        logs.length = 0;
+        mirrorEvents.length = 0;
+
+        const stats0 = await extractor.extractAndPersist(
+            "用户喜欢乌龙茶。",
+            "fresh-session",
+            { scope: "fresh", scopeFilter: ["fresh"], persistMeta: { agentId: "main" } },
+        );
+
+        const freshEntries = await store.list(["fresh"], undefined, 10, 0);
+        assert.equal(freshEntries.length, 1, "create should store a new entry in fresh scope");
+        assert.equal(stats0.created, 1, "created count should be 1 for fresh scope");
+        assert.equal(mirrorEvents.length, 1, "create should emit one compatibility mirror event");
+        assert.equal(mirrorEvents[0].source, "smart-extract:create");
+        assert.equal(mirrorEvents[0].scope, "fresh");
+        assert.equal(mirrorEvents[0].agentId, "main");
+        console.log("  ✅ create decision emits compatibility mirror event");
 
         // ----------------------------------------------------------------
         // Scenario 1: support — should update support_info, no new entry
@@ -157,10 +181,11 @@ async function runTest() {
         dedupContextLabel = "evening";
         logs.length = 0;
 
+        const supportMirrorCountBefore = mirrorEvents.length;
         const stats1 = await extractor.extractAndPersist(
             "用户再次确认喜欢乌龙茶，特别是晚上。",
             "test-session",
-            { scope: "test", scopeFilter: ["test"] },
+            { scope: "test", scopeFilter: ["test"], persistMeta: { agentId: "main" } },
         );
 
         const entries1 = await store.list(["test"], undefined, 10, 0);
@@ -174,6 +199,7 @@ async function runTest() {
         const eveningSlice = si1.slices.find(s => s.context === "evening");
         assert.ok(eveningSlice, "evening slice should exist");
         assert.equal(eveningSlice.confirmations, 1, "evening confirmations should be 1");
+        assert.equal(mirrorEvents.length, supportMirrorCountBefore, "support should not emit a compatibility mirror event");
         console.log("  ✅ support decision works correctly");
 
         // ----------------------------------------------------------------
@@ -187,7 +213,7 @@ async function runTest() {
         const stats2 = await extractor.extractAndPersist(
             "用户再次确认深夜也会喝乌龙茶。",
             "test-session",
-            { scope: "test", scopeFilter: ["test"] },
+            { scope: "test", scopeFilter: ["test"], persistMeta: { agentId: "main" } },
         );
 
         const entries2 = await store.list(["test"], undefined, 10, 0);
@@ -199,6 +225,7 @@ async function runTest() {
         const lateNightSlice = si2.slices.find(s => s.context === "late_night");
         assert.ok(lateNightSlice, "late_night slice should exist after merge");
         assert.equal(lateNightSlice.confirmations, 1, "late_night confirmations should be 1");
+        assert.equal(mirrorEvents.at(-1)?.source, "smart-extract:merge");
         console.log("  ✅ merge decision works correctly");
 
         // ----------------------------------------------------------------
@@ -212,12 +239,13 @@ async function runTest() {
         const stats3 = await extractor.extractAndPersist(
             "用户说晚上改喝花茶。",
             "test-session",
-            { scope: "test", scopeFilter: ["test"] },
+            { scope: "test", scopeFilter: ["test"], persistMeta: { agentId: "main" } },
         );
 
         const entries3 = await store.list(["test"], undefined, 10, 0);
         assert.equal(entries3.length, 2, "contextualize should create 1 new entry");
         assert.equal(stats3.created, 1, "created count should be 1");
+        assert.equal(mirrorEvents.at(-1)?.source, "smart-extract:contextualize");
         console.log("  ✅ contextualize decision works correctly");
 
         // ----------------------------------------------------------------
@@ -231,7 +259,7 @@ async function runTest() {
         const stats4 = await extractor.extractAndPersist(
             "用户说周末不喝茶了。",
             "test-session",
-            { scope: "test", scopeFilter: ["test"] },
+            { scope: "test", scopeFilter: ["test"], persistMeta: { agentId: "main" } },
         );
 
         const entries4 = await store.list(["test"], undefined, 10, 0);
@@ -251,6 +279,7 @@ async function runTest() {
             }
         }
         assert.ok(foundWeekend, "at least one entry should have weekend contradiction");
+        assert.equal(mirrorEvents.at(-1)?.source, "smart-extract:contradict");
         console.log("  ✅ contradict decision works correctly");
 
         console.log("\n=== All Context-Support E2E tests passed! ===");

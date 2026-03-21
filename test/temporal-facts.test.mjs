@@ -72,6 +72,7 @@ async function runTest() {
 
   const workDir = mkdtempSync(path.join(tmpdir(), "temporal-facts-"));
   const dbPath = path.join(workDir, "db");
+  const mirrorEvents = [];
   let dedupDecision = "supersede";
 
   const embeddingServer = createEmbeddingServer();
@@ -162,13 +163,14 @@ async function runTest() {
       user: "User",
       extractMinMessages: 1,
       defaultScope: "test",
+      onPersist: (event) => mirrorEvents.push(event),
     });
 
     console.log("\nTest 2: supersede preserves history but invalidates the old fact...");
     const stats = await extractor.extractAndPersist(
       "用户现在改喝咖啡。",
       "temporal-session",
-      { scope: "test", scopeFilter: ["test"] },
+      { scope: "test", scopeFilter: ["test"], persistMeta: { agentId: "main" } },
     );
 
     assert.equal(stats.created, 1);
@@ -193,6 +195,10 @@ async function runTest() {
     assert.equal(currentMeta.fact_key, historicalMeta.fact_key);
     assert.equal(isMemoryActiveAt(currentMeta), true);
     assert.equal(isMemoryActiveAt(historicalMeta), false);
+    assert.equal(mirrorEvents.length, 1, "supersede should emit exactly one compatibility mirror event");
+    assert.equal(mirrorEvents[0].source, "smart-extract:supersede");
+    assert.equal(mirrorEvents[0].scope, "test");
+    assert.equal(mirrorEvents[0].agentId, "main");
     console.log("  ✅ old fact is retained as history and marked inactive");
 
     console.log("\nTest 3: retriever returns only the current valid fact...");

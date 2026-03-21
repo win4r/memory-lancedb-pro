@@ -109,6 +109,15 @@ const VALID_DECISIONS = new Set<string>([
 // Smart Extractor
 // ============================================================================
 
+export interface SmartExtractorPersistEvent {
+  text: string;
+  category: MemoryCategory;
+  scope: string;
+  source: string;
+  timestamp: number;
+  agentId?: string;
+}
+
 export interface SmartExtractorConfig {
   /** User identifier for extraction prompt. */
   user?: string;
@@ -126,6 +135,8 @@ export interface SmartExtractorConfig {
   noiseBank?: NoisePrototypeBank;
   /** Facts reserved for workspace-managed USER.md should never enter LanceDB. */
   workspaceBoundary?: WorkspaceBoundaryConfig;
+  /** Optional compatibility mirror callback for durable persisted memories. */
+  onPersist?: (event: SmartExtractorPersistEvent) => Promise<void> | void;
 }
 
 export interface ExtractPersistOptions {
@@ -139,6 +150,8 @@ export interface ExtractPersistOptions {
    * - pass a non-empty array to restrict reads to those scopes
    */
   scopeFilter?: string[];
+  /** Optional metadata forwarded to compatibility-mirror hooks. */
+  persistMeta?: { agentId?: string };
 }
 
 export class SmartExtractor {
@@ -153,6 +166,24 @@ export class SmartExtractor {
   ) {
     this.log = config.log ?? ((msg: string) => console.log(msg));
     this.debugLog = config.debugLog ?? (() => { });
+  }
+
+  private async emitPersistedMirror(
+    entry: { text: string; category: MemoryCategory; scope: string; source: string },
+    persistMeta?: { agentId?: string },
+  ): Promise<void> {
+    if (!this.config.onPersist) return;
+    try {
+      await this.config.onPersist({
+        ...entry,
+        timestamp: Date.now(),
+        agentId: persistMeta?.agentId,
+      });
+    } catch (err) {
+      this.log(
+        `memory-pro: smart-extractor: compatibility mirror failed: ${String(err)}`,
+      );
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -220,6 +251,7 @@ export class SmartExtractor {
           stats,
           targetScope,
           scopeFilter,
+          options.persistMeta,
         );
       } catch (err) {
         this.log(
@@ -401,6 +433,7 @@ export class SmartExtractor {
     stats: ExtractionStats,
     targetScope: string,
     scopeFilter?: string[],
+    persistMeta?: { agentId?: string },
   ): Promise<void> {
     // Profile always merges (skip dedup)
     if (ALWAYS_MERGE_CATEGORIES.has(candidate.category)) {
@@ -409,6 +442,7 @@ export class SmartExtractor {
         sessionKey,
         targetScope,
         scopeFilter,
+        persistMeta,
       );
       stats.merged++;
       return;
@@ -419,7 +453,7 @@ export class SmartExtractor {
     const vector = await this.embedder.embed(embeddingText);
     if (!vector || vector.length === 0) {
       this.log("memory-pro: smart-extractor: embedding failed, storing as-is");
-      await this.storeCandidate(candidate, vector || [], sessionKey, targetScope);
+      await this.storeCandidate(candidate, vector || [], sessionKey, targetScope, persistMeta);
       stats.created++;
       return;
     }
@@ -429,7 +463,7 @@ export class SmartExtractor {
 
     switch (dedupResult.decision) {
       case "create":
-        await this.storeCandidate(candidate, vector, sessionKey, targetScope);
+        await this.storeCandidate(candidate, vector, sessionKey, targetScope, persistMeta);
         stats.created++;
         break;
 
@@ -444,11 +478,12 @@ export class SmartExtractor {
             targetScope,
             scopeFilter,
             dedupResult.contextLabel,
+            persistMeta,
           );
           stats.merged++;
         } else {
           // Category doesn't support merge → create instead
-          await this.storeCandidate(candidate, vector, sessionKey, targetScope);
+          await this.storeCandidate(candidate, vector, sessionKey, targetScope, persistMeta);
           stats.created++;
         }
         break;
@@ -472,11 +507,12 @@ export class SmartExtractor {
             sessionKey,
             targetScope,
             scopeFilter,
+            persistMeta,
           );
           stats.created++;
           stats.superseded = (stats.superseded ?? 0) + 1;
         } else {
-          await this.storeCandidate(candidate, vector, sessionKey, targetScope);
+          await this.storeCandidate(candidate, vector, sessionKey, targetScope, persistMeta);
           stats.created++;
         }
         break;
@@ -486,17 +522,17 @@ export class SmartExtractor {
           await this.handleSupport(dedupResult.matchId, { session: sessionKey, timestamp: Date.now() }, dedupResult.reason, dedupResult.contextLabel, scopeFilter);
           stats.supported = (stats.supported ?? 0) + 1;
         } else {
-          await this.storeCandidate(candidate, vector, sessionKey, targetScope);
+          await this.storeCandidate(candidate, vector, sessionKey, targetScope, persistMeta);
           stats.created++;
         }
         break;
 
       case "contextualize":
         if (dedupResult.matchId) {
-          await this.handleContextualize(candidate, vector, dedupResult.matchId, sessionKey, targetScope, scopeFilter, dedupResult.contextLabel);
+          await this.handleContextualize(candidate, vector, dedupResult.matchId, sessionKey, targetScope, scopeFilter, dedupResult.contextLabel, persistMeta);
           stats.created++;
         } else {
-          await this.storeCandidate(candidate, vector, sessionKey, targetScope);
+          await this.storeCandidate(candidate, vector, sessionKey, targetScope, persistMeta);
           stats.created++;
         }
         break;
@@ -514,15 +550,16 @@ export class SmartExtractor {
               sessionKey,
               targetScope,
               scopeFilter,
+              persistMeta,
             );
             stats.created++;
             stats.superseded = (stats.superseded ?? 0) + 1;
           } else {
-            await this.handleContradict(candidate, vector, dedupResult.matchId, sessionKey, targetScope, scopeFilter, dedupResult.contextLabel);
+            await this.handleContradict(candidate, vector, dedupResult.matchId, sessionKey, targetScope, scopeFilter, dedupResult.contextLabel, persistMeta);
             stats.created++;
           }
         } else {
-          await this.storeCandidate(candidate, vector, sessionKey, targetScope);
+          await this.storeCandidate(candidate, vector, sessionKey, targetScope, persistMeta);
           stats.created++;
         }
         break;
@@ -654,6 +691,7 @@ export class SmartExtractor {
     sessionKey: string,
     targetScope: string,
     scopeFilter?: string[],
+    persistMeta?: { agentId?: string },
   ): Promise<void> {
     // Find existing profile memory by category
     const embeddingText = `${candidate.abstract} ${candidate.content}`;
@@ -681,10 +719,12 @@ export class SmartExtractor {
         profileMatch.entry.id,
         targetScope,
         scopeFilter,
+        undefined,
+        persistMeta,
       );
     } else {
       // No existing profile — create new
-      await this.storeCandidate(candidate, vector || [], sessionKey, targetScope);
+      await this.storeCandidate(candidate, vector || [], sessionKey, targetScope, persistMeta);
     }
   }
 
@@ -697,6 +737,7 @@ export class SmartExtractor {
     targetScope: string,
     scopeFilter?: string[],
     contextLabel?: string,
+    persistMeta?: { agentId?: string },
   ): Promise<void> {
     let existingAbstract = "";
     let existingOverview = "";
@@ -723,6 +764,7 @@ export class SmartExtractor {
         vector || [],
         "merge-fallback",
         targetScope,
+        persistMeta,
       );
       return;
     }
@@ -790,6 +832,16 @@ export class SmartExtractor {
       // Non-critical: merge succeeded, support stats update is best-effort
     }
 
+    await this.emitPersistedMirror(
+      {
+        text: merged.abstract,
+        category: candidate.category,
+        scope: targetScope,
+        source: "smart-extract:merge",
+      },
+      persistMeta,
+    );
+
     this.log(
       `memory-pro: smart-extractor: merged [${candidate.category}]${contextLabel ? ` [${contextLabel}]` : ""} into ${matchId.slice(0, 8)}`,
     );
@@ -805,11 +857,12 @@ export class SmartExtractor {
     matchId: string,
     sessionKey: string,
     targetScope: string,
-    scopeFilter: string[],
+    scopeFilter?: string[],
+    persistMeta?: { agentId?: string },
   ): Promise<void> {
     const existing = await this.store.getById(matchId, scopeFilter);
     if (!existing) {
-      await this.storeCandidate(candidate, vector, sessionKey, targetScope);
+      await this.storeCandidate(candidate, vector, sessionKey, targetScope, persistMeta);
       return;
     }
 
@@ -867,6 +920,16 @@ export class SmartExtractor {
       scopeFilter,
     );
 
+    await this.emitPersistedMirror(
+      {
+        text: candidate.abstract,
+        category: candidate.category,
+        scope: targetScope,
+        source: "smart-extract:supersede",
+      },
+      persistMeta,
+    );
+
     this.log(
       `memory-pro: smart-extractor: superseded [${candidate.category}] ${matchId.slice(0, 8)} -> ${created.id.slice(0, 8)}`,
     );
@@ -917,6 +980,7 @@ export class SmartExtractor {
     targetScope: string,
     scopeFilter?: string[],
     contextLabel?: string,
+    persistMeta?: { agentId?: string },
   ): Promise<void> {
     const storeCategory = this.mapToStoreCategory(candidate.category);
     const metadata = stringifySmartMetadata({
@@ -942,6 +1006,16 @@ export class SmartExtractor {
       metadata,
     });
 
+    await this.emitPersistedMirror(
+      {
+        text: candidate.abstract,
+        category: candidate.category,
+        scope: targetScope,
+        source: "smart-extract:contextualize",
+      },
+      persistMeta,
+    );
+
     this.log(
       `memory-pro: smart-extractor: contextualize [${contextLabel || "general"}] new entry linked to ${matchId.slice(0, 8)}`,
     );
@@ -959,6 +1033,7 @@ export class SmartExtractor {
     targetScope: string,
     scopeFilter?: string[],
     contextLabel?: string,
+    persistMeta?: { agentId?: string },
   ): Promise<void> {
     // 1. Record contradiction on the existing memory
     const existing = await this.store.getById(matchId, scopeFilter);
@@ -999,6 +1074,16 @@ export class SmartExtractor {
       metadata,
     });
 
+    await this.emitPersistedMirror(
+      {
+        text: candidate.abstract,
+        category: candidate.category,
+        scope: targetScope,
+        source: "smart-extract:contradict",
+      },
+      persistMeta,
+    );
+
     this.log(
       `memory-pro: smart-extractor: contradict [${contextLabel || "general"}] on ${matchId.slice(0, 8)}, new entry created`,
     );
@@ -1016,6 +1101,7 @@ export class SmartExtractor {
     vector: number[],
     sessionKey: string,
     targetScope: string,
+    persistMeta?: { agentId?: string },
   ): Promise<void> {
     // Map 6-category to existing store categories for backward compatibility
     const storeCategory = this.mapToStoreCategory(candidate.category);
@@ -1047,6 +1133,16 @@ export class SmartExtractor {
       importance: this.getDefaultImportance(candidate.category),
       metadata,
     });
+
+    await this.emitPersistedMirror(
+      {
+        text: candidate.abstract,
+        category: candidate.category,
+        scope: targetScope,
+        source: "smart-extract:create",
+      },
+      persistMeta,
+    );
 
     this.log(
       `memory-pro: smart-extractor: created [${candidate.category}] ${candidate.abstract.slice(0, 60)}`,
