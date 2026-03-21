@@ -63,6 +63,12 @@ Implement an incremental, architecture-compatible upgrade path for agent-scoped 
 - [TODO] Update skill/docs so agents prefer memory-lancedb-pro retrieval when enabled
 - [TODO] Keep Markdown / SQLite described as compatibility, fallback, and upgrade sources rather than the preferred retrieval layer
 
+## Track E — Phase 2 implementation decomposition
+- [DONE] Create worker-level decomposition for Phase 2 implementation waves
+- [TODO] Freeze Wave 1 shared interfaces before spawning Phase 2 workers
+- [TODO] Prepare isolated worktrees for P2-W1 / P2-W2 / P2-W3 when implementation begins
+- [TODO] Ensure SQLite continuity remains an explicit implementation track, not just a design note
+
 ## Multi-agent execution rules
 1. Main agent owns architecture understanding and task decomposition.
 2. Each coding worker must use an isolated git worktree or isolated non-overlapping working directory.
