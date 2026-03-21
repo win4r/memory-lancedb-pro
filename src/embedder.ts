@@ -84,7 +84,8 @@ class EmbeddingCache {
 // ============================================================================
 
 export interface EmbeddingConfig {
-  provider: "openai-compatible";
+  provider: "openai-compatible" | "azure-openai";
+  apiVersion?: string;
   /** Single API key or array of keys for round-robin rotation with failover. */
   apiKey: string | string[];
   model: string;
@@ -103,6 +104,7 @@ export interface EmbeddingConfig {
 
 type EmbeddingProviderProfile =
   | "openai"
+  | "azure-openai"
   | "jina"
   | "voyage-compatible"
   | "generic-openai-compatible";
@@ -204,6 +206,7 @@ function getProviderLabel(baseURL: string | undefined, model: string): string {
     if (profile === "jina" && /api\.jina\.ai/i.test(base)) return "Jina";
     if (profile === "voyage-compatible" && /api\.voyageai\.com/i.test(base)) return "Voyage";
     if (profile === "openai" && /api\.openai\.com/i.test(base)) return "OpenAI";
+    if (profile === "azure-openai" || /\.openai\.azure\.com/i.test(base)) return "Azure OpenAI";
 
     try {
       return new URL(base).host;
@@ -218,6 +221,7 @@ function getProviderLabel(baseURL: string | undefined, model: string): string {
     case "voyage-compatible":
       return "Voyage";
     case "openai":
+    case "azure-openai":
       return "OpenAI";
     default:
       return "embedding provider";
@@ -231,6 +235,7 @@ function detectEmbeddingProviderProfile(
   const base = baseURL || "";
 
   if (/api\.openai\.com/i.test(base)) return "openai";
+  if (/\.openai\.azure\.com/i.test(base)) return "azure-openai";
   if (/api\.jina\.ai/i.test(base) || /^jina-/i.test(model)) return "jina";
   if (/api\.voyageai\.com/i.test(base) || /^voyage\b/i.test(model)) {
     return "voyage-compatible";
@@ -437,10 +442,25 @@ export class Embedder {
     }
 
     // Create a client pool — one OpenAI client per key
-    this.clients = resolvedKeys.map(key => new OpenAI({
-      apiKey: key,
-      ...(config.baseURL ? { baseURL: config.baseURL } : {}),
-    }));
+    this.clients = resolvedKeys.map(key => {
+      let defaultHeaders: Record<string, string> = {};
+      let baseURL = config.baseURL;
+
+      if (config.provider === "azure-openai" || profile === "azure-openai") {
+        defaultHeaders["api-key"] = key;
+        if (baseURL && config.apiVersion) {
+          const url = new URL(baseURL);
+          url.searchParams.set("api-version", config.apiVersion);
+          baseURL = url.toString();
+        }
+      }
+
+      return new OpenAI({
+        apiKey: key,
+        ...(baseURL ? { baseURL } : {}),
+        defaultHeaders: Object.keys(defaultHeaders).length > 0 ? defaultHeaders : undefined,
+      });
+    });
 
     if (this.clients.length > 1) {
       console.log(`[memory-lancedb-pro] Initialized ${this.clients.length} API keys for round-robin rotation`);
