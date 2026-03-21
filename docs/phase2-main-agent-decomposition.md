@@ -90,7 +90,7 @@ Prevent A→B-period memories from existing only in LanceDB while also avoiding 
 
 ### Questions to resolve
 - what exactly is the "legacy write target"?
-  - preferred current direction: per-agent workspace subtree under `memory/plugin-memory-pro/`
+  - preferred current direction: per-agent workspace parallel subtree under `memory/plugins/memory-lancedb-pro/`
   - current frozen minimum target: `README.md` + `YYYY-MM-DD.md`
   - do not introduce extra derived subpaths unless runtime behavior proves they are needed
 - how to avoid duplicate growth and conflicting histories?

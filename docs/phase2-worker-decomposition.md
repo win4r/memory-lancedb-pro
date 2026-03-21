@@ -132,7 +132,7 @@ This is where the stronger compatibility requirements become real implementation
 
 **Responsibilities:**
 - define/implement durable-memory mirror/backfill to Markdown-compatible output
-- target a dedicated per-agent workspace subtree such as `memory/plugin-memory-pro/` rather than mixing plugin output into human-authored daily logs
+- target a dedicated per-agent workspace parallel subtree such as `memory/plugins/memory-lancedb-pro/` rather than mixing plugin output into human-authored daily logs
 - provision and maintain a small `README.md` / `STATEMENT.md` explaining the subtree's purpose as a compatibility/reversibility layer
 - keep the first runtime write-path minimal: `README.md` + dated Markdown files, without extra derived subpaths unless later needed
 - avoid noisy over-write of transient material

@@ -16,7 +16,7 @@ It answers three questions before new implementation workers are spawned:
 |---|---|---|---|---|---|---|
 | Long-term Markdown memory | `MEMORY.md` | Human-curated durable memory | **High** | **Highest** | Treat as primary legacy import source | Over-importing prose verbatim; duplicate facts |
 | Daily Markdown memory | `memory/YYYY-MM-DD.md` | Daily log / event stream / temporary context | Medium | High | Treat as primary event-oriented import source, but require filtering/distillation | Too much low-value noise, repeated transient content |
-| mdMirror-style / plugin-generated Markdown | `memory/plugin-memory-pro/**` or other generated mirrors | Machine-readable compatibility mirror | Medium-High | High | Treat as structured import/export format when available | Duplicate content if mixed with human-authored markdown or top-level daily logs |
+| mdMirror-style / plugin-generated Markdown | `memory/plugins/memory-lancedb-pro/**` or other generated mirrors | Machine-readable compatibility mirror | Medium-High | High | Treat as structured import/export format when available | Duplicate content if mixed with human-authored markdown or top-level daily logs |
 | Per-agent SQLite stores | `~/.openclaw/memory/*.sqlite` | OpenClaw legacy per-agent retrieval/index layer | Medium | Medium | Treat as compatibility and candidate source; do not assume it is the first source of truth when paired Markdown exists | Importing opaque/derived rows can duplicate Markdown-derived memory |
 | Current LanceDB memory | `memory-lancedb-pro` DB | Preferred plugin memory layer | New primary runtime layer | N/A | Treat as current management layer, not a legacy source | Lock-in if no reversible sync/backfill exists |
 
@@ -81,7 +81,7 @@ Revised requirement:
 - when a new memory is accepted as durable, write it to LanceDB
 - also keep the legacy systems updated so reversibility is real, not theoretical:
   - maintain Markdown-compatible memory continuity
-    - preferred target: a dedicated per-agent workspace subtree such as `memory/plugin-memory-pro/`
+    - preferred target: a dedicated per-agent workspace parallel subtree such as `memory/plugins/memory-lancedb-pro/`
     - do not mix plugin-generated output into the human-authored top-level `memory/YYYY-MM-DD.md` files
     - include a small `README.md` / `STATEMENT.md` in that subtree explaining why the files exist
     - keep the initial write-path minimal; do not assume extra derived subpaths until implementation actually requires them
@@ -171,7 +171,7 @@ Implement SQLite preview / dry-run import semantics
 Implement controlled real import with dedupe/filtering
 
 ### Step 5
-Implement reversible Markdown-compatible sync/backfill for durable memories, targeting a dedicated per-agent workspace subtree such as `memory/plugin-memory-pro/` with `README.md` and dated Markdown files as the initial contract
+Implement reversible Markdown-compatible sync/backfill for durable memories, targeting a dedicated per-agent workspace parallel subtree such as `memory/plugins/memory-lancedb-pro/` with `README.md` and dated Markdown files as the initial contract
 
 ### Step 6
 Implement or preserve SQLite continuity alongside that Markdown subtree so the legacy OpenClaw path does not go stale during plugin-enabled runtime
@@ -192,7 +192,7 @@ Update skill/docs so agents prefer `memory-lancedb-pro` retrieval while treating
 ## G. Summary decisions
 1. **Markdown-first** for historical import when Markdown and SQLite overlap
 2. **SQLite detected and previewed**, but not assumed to be the canonical human-authored write target
-3. **Hybrid sync strategy** preferred: LanceDB primary runtime layer + dedicated per-agent compatibility Markdown subtree (for example `memory/plugin-memory-pro/`) + ongoing SQLite continuity
-4. **Plugin-generated Markdown should not be mixed into** human-authored top-level `memory/YYYY-MM-DD.md` daily logs; the frozen target is a subtree rooted at `memory/plugin-memory-pro/` with `README.md` plus dated Markdown files, and should not assume deeper derived subpaths yet
+3. **Hybrid sync strategy** preferred: LanceDB primary runtime layer + dedicated per-agent compatibility Markdown subtree (for example `memory/plugins/memory-lancedb-pro/`) + ongoing SQLite continuity
+4. **Plugin-generated Markdown should not be mixed into** human-authored top-level `memory/YYYY-MM-DD.md` daily logs; the frozen target is a parallel subtree rooted at `memory/plugins/memory-lancedb-pro/` with `README.md` plus dated Markdown files, and should not assume deeper derived subpaths yet
 5. **Preview-first CLI** before any broad destructive import
 6. **Skill/docs should prefer LanceDB retrieval** once enabled, while preserving legacy compatibility layers
