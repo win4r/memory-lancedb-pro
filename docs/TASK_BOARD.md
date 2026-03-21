@@ -13,12 +13,12 @@ Implement an incremental, architecture-compatible upgrade path for agent-scoped 
 - [DONE] Establish git-managed development clone under workspace
 - [DONE] Create feature branch `feat/agent-scoped-memory-upgrade-flow`
 - [DONE] Record project review and minimal-change design notes
-- [TODO] Confirm exact phase boundaries before parallel coding
+- [DONE] Confirm exact phase boundaries before parallel coding
 
 ## Track B — Engineering safety rails
 - [DONE] Add local verification script `scripts/verify-before-submit.sh`
 - [DONE] Add git hook entrypoint under `.githooks/pre-commit`
-- [TODO] Enable repo-local `core.hooksPath=.githooks`
+- [DONE] Enable repo-local `core.hooksPath=.githooks`
 - [TODO] Smoke test hook behavior with a real commit in this dev repo
 
 ## Track C — Phase 1 feature work
@@ -58,6 +58,8 @@ Implement an incremental, architecture-compatible upgrade path for agent-scoped 
 - [DONE] Evaluate dual-write, mirror, export-backfill, or other reversible sync strategies and choose a preferred direction
 - [DONE] Define disable/uninstall behavior expectations so users are not permanently bound to the plugin layer
 - [TODO] Refine the chosen sync strategy so legacy SQLite continuity is explicitly preserved during plugin-enabled runtime, not only on export/disable
+- [TODO] Freeze the compatibility Markdown target as a per-agent workspace subtree (for example `memory/plugin-memory-pro/`) instead of mixing plugin output into human-authored daily logs
+- [TODO] Define the required README / STATEMENT contract for that subtree so users can understand why the files exist after plugin enable/disable cycles
 
 ### D4. Retrieval preference & skill guidance
 - [TODO] Update skill/docs so agents prefer memory-lancedb-pro retrieval when enabled
@@ -66,8 +68,8 @@ Implement an incremental, architecture-compatible upgrade path for agent-scoped 
 ## Track E — Phase 2 implementation decomposition
 - [DONE] Create worker-level decomposition for Phase 2 implementation waves
 - [TODO] Freeze Wave 1 shared interfaces before spawning Phase 2 workers
-- [TODO] Prepare isolated worktrees for P2-W1 / P2-W2 / P2-W3 when implementation begins
-- [TODO] Ensure SQLite continuity remains an explicit implementation track, not just a design note
+- [DONE] Prepare isolated worktrees for P2-W1 / P2-W2 / P2-W3 when implementation begins
+- [DONE] Ensure SQLite continuity remains an explicit implementation track, not just a design note
 
 ## Multi-agent execution rules
 1. Main agent owns architecture understanding and task decomposition.

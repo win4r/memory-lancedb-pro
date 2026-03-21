@@ -90,9 +90,9 @@ Prevent A→B-period memories from existing only in LanceDB while also avoiding 
 
 ### Questions to resolve
 - what exactly is the "legacy write target"?
-  - Markdown file append?
-  - mdMirror?
-  - something else?
+  - preferred current direction: per-agent workspace subtree under `memory/plugin-memory-pro/`
+  - should that subtree contain daily audit logs, per-memory canonical files, or both?
+  - what README / STATEMENT file must exist there?
 - how to avoid duplicate growth and conflicting histories?
 - which memories are durable enough to merit backward sync?
 - what happens when plugin is disabled but old systems continue alone?

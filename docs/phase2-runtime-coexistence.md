@@ -88,8 +88,10 @@ Use **Option C: Hybrid durable-memory sync**.
 ### Recommended policy
 1. If a memory is durable enough to materially affect future recall, it should have a compatibility path outside LanceDB.
 2. Markdown-compatible artifacts should remain part of the reversibility target.
-3. SQLite continuity must also be maintained during active plugin use so the old OpenClaw memory path does not silently go stale.
-4. Users should be able to disable/uninstall the plugin without losing the practical ability to continue from legacy-compatible memory artifacts and legacy SQLite-backed retrieval.
+3. The preferred Markdown target should be a **separate subtree inside each agent workspace memory directory** (for example `memory/plugin-memory-pro/`), not the human-authored top-level `memory/YYYY-MM-DD.md` files.
+4. That subtree should include a small `README.md` or `STATEMENT.md` explaining that the files exist because the plugin was enabled and are intended as compatibility / reversibility artifacts.
+5. SQLite continuity must also be maintained during active plugin use so the old OpenClaw memory path does not silently go stale.
+6. Users should be able to disable/uninstall the plugin without losing the practical ability to continue from legacy-compatible memory artifacts and legacy SQLite-backed retrieval.
 
 ---
 
@@ -136,6 +138,15 @@ Define what counts as a “durable accepted memory” eligible for compatibility
 
 ### Step 2
 Define the Markdown-compatible mirror/backfill target format.
+
+Current preferred direction:
+- create a dedicated compatibility subtree per agent workspace under `memory/plugin-memory-pro/`
+- keep plugin-generated files out of the human-authored top-level `memory/YYYY-MM-DD.md` daily logs
+- include a `README.md` / `STATEMENT.md` in that subtree so later users can understand why the files exist
+- decide whether the subtree is:
+  - daily audit logs only,
+  - per-memory canonical files,
+  - or a hybrid (`daily/` + `entries/`)
 
 ### Step 3
 Implement preview/reporting for reversible export/backfill.

@@ -132,6 +132,8 @@ This is where the stronger compatibility requirements become real implementation
 
 **Responsibilities:**
 - define/implement durable-memory mirror/backfill to Markdown-compatible output
+- target a dedicated per-agent workspace subtree such as `memory/plugin-memory-pro/` rather than mixing plugin output into human-authored daily logs
+- provision and maintain a small `README.md` / `STATEMENT.md` explaining the subtree's purpose as a compatibility/reversibility layer
 - avoid noisy over-write of transient material
 
 ---
