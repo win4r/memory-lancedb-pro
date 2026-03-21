@@ -127,6 +127,100 @@
         "default": 8000,
         "description": "Maximum conversation characters sent to the smart extraction LLM."
       },
+      "admissionControl": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "A-MAC-style admission governance on the smart-extraction write path. Rejects low-value candidates before persistence while preserving downstream dedup behavior for admitted candidates.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "preset": {
+            "type": "string",
+            "enum": [
+              "balanced",
+              "conservative",
+              "high-recall"
+            ],
+            "default": "balanced",
+            "description": "Named admission tuning preset. Explicit admissionControl fields still override the selected preset."
+          },
+          "utilityMode": {
+            "type": "string",
+            "enum": [
+              "standalone",
+              "off"
+            ],
+            "default": "standalone"
+          },
+          "rejectThreshold": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.45
+          },
+          "admitThreshold": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.6
+          },
+          "noveltyCandidatePoolSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 8
+          },
+          "auditMetadata": {
+            "type": "boolean",
+            "default": true
+          },
+          "persistRejectedAudits": {
+            "type": "boolean",
+            "default": true
+          },
+          "rejectedAuditFilePath": {
+            "type": "string",
+            "description": "Optional JSONL file path for durable admission reject audit records. Defaults to a file beside the plugin memory data directory."
+          },
+          "recency": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "halfLifeDays": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 365,
+                "default": 14
+              }
+            }
+          },
+          "weights": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "utility": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.1 },
+              "confidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.1 },
+              "novelty": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.1 },
+              "recency": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.1 },
+              "typePrior": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.6 }
+            }
+          },
+          "typePriors": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "profile": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.95 },
+              "preferences": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.9 },
+              "entities": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.75 },
+              "events": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.45 },
+              "cases": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.8 },
+              "patterns": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.85 }
+            }
+          }
+        }
+      },
       "retrieval": {
         "type": "object",
         "additionalProperties": false,
@@ -598,6 +692,66 @@
     "extractMaxChars": {
       "label": "Max Chars for Extraction",
       "help": "Maximum conversation characters to process for extraction",
+      "advanced": true
+    },
+    "admissionControl.enabled": {
+      "label": "Admission Control",
+      "help": "Enable A-MAC-style admission scoring before downstream dedup.",
+      "advanced": true
+    },
+    "admissionControl.preset": {
+      "label": "Admission Preset",
+      "help": "balanced is the default; conservative favors precision; high-recall favors recall. Explicit admissionControl fields override the preset.",
+      "advanced": true
+    },
+    "admissionControl.utilityMode": {
+      "label": "Admission Utility Mode",
+      "help": "standalone adds a separate LLM utility scoring call; off disables that feature.",
+      "advanced": true
+    },
+    "admissionControl.rejectThreshold": {
+      "label": "Admission Reject Threshold",
+      "help": "Candidates below this weighted score are rejected before persistence.",
+      "advanced": true
+    },
+    "admissionControl.admitThreshold": {
+      "label": "Admission Admit Threshold",
+      "help": "Higher-scoring admitted candidates are labeled as likely add cases in audit metadata; all admitted candidates still go through downstream dedup.",
+      "advanced": true
+    },
+    "admissionControl.noveltyCandidatePoolSize": {
+      "label": "Admission Novelty Pool",
+      "help": "Number of nearby memories to compare for novelty scoring.",
+      "advanced": true
+    },
+    "admissionControl.auditMetadata": {
+      "label": "Admission Audit Metadata",
+      "help": "Persist per-memory admission scores and reasons in metadata for debugging.",
+      "advanced": true
+    },
+    "admissionControl.persistRejectedAudits": {
+      "label": "Persist Reject Audits",
+      "help": "Write rejected admission decisions to a JSONL audit log for later review.",
+      "advanced": true
+    },
+    "admissionControl.rejectedAuditFilePath": {
+      "label": "Reject Audit File",
+      "help": "Optional JSONL path for rejected admission audit records. Defaults beside the plugin memory data directory.",
+      "advanced": true
+    },
+    "admissionControl.recency.halfLifeDays": {
+      "label": "Admission Recency Half-Life",
+      "help": "Controls how quickly recency rises as similar memories get older.",
+      "advanced": true
+    },
+    "admissionControl.weights": {
+      "label": "Admission Weights",
+      "help": "Feature weights are normalized at runtime before scoring.",
+      "advanced": true
+    },
+    "admissionControl.typePriors": {
+      "label": "Admission Type Priors",
+      "help": "Category priors for long-term retention likelihood.",
       "advanced": true
     },
     "autoCapture": {
