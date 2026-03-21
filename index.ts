@@ -147,6 +147,7 @@ interface PluginConfig {
     default?: string;
     definitions?: Record<string, { description: string }>;
     agentAccess?: Record<string, string[]>;
+    autoAgentScope?: boolean;
   };
   enableManagementTools?: boolean;
   sessionStrategy?: SessionStrategy;
