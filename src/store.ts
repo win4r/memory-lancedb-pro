@@ -422,6 +422,63 @@ export class MemoryStore {
     };
   }
 
+  async resolveByIdOrPrefix(id: string): Promise<MemoryEntry | null> {
+    await this.ensureInitialized();
+
+    const uuidRegex =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const prefixRegex = /^[0-9a-f]{8,}$/i;
+    const isFullId = uuidRegex.test(id);
+    const isPrefix = !isFullId && prefixRegex.test(id);
+
+    if (!isFullId && !isPrefix) {
+      throw new Error(`Invalid memory ID format: ${id}`);
+    }
+
+    let rows: any[];
+    if (isFullId) {
+      const safeId = escapeSqlLiteral(id);
+      rows = await this.table!.query()
+        .where(`id = '${safeId}'`)
+        .limit(1)
+        .toArray();
+    } else {
+      const all = await this.table!.query()
+        .select([
+          "id",
+          "text",
+          "vector",
+          "category",
+          "scope",
+          "importance",
+          "timestamp",
+          "metadata",
+        ])
+        .limit(1000)
+        .toArray();
+      rows = all.filter((row: any) => (row.id as string).startsWith(id));
+      if (rows.length > 1) {
+        throw new Error(
+          `Ambiguous prefix "${id}" matches ${rows.length} memories. Use a longer prefix or full ID.`,
+        );
+      }
+    }
+
+    if (rows.length === 0) return null;
+
+    const row = rows[0];
+    return {
+      id: row.id as string,
+      text: row.text as string,
+      vector: Array.from(row.vector as Iterable<number>),
+      category: row.category as MemoryEntry["category"],
+      scope: (row.scope as string | undefined) ?? "global",
+      importance: Number(row.importance),
+      timestamp: Number(row.timestamp),
+      metadata: (row.metadata as string) || "{}",
+    };
+  }
+
   async vectorSearch(vector: number[], limit = 5, minScore = 0.3, scopeFilter?: string[], options?: { excludeInactive?: boolean }): Promise<MemorySearchResult[]> {
     await this.ensureInitialized();
 
@@ -1015,10 +1072,23 @@ export class MemoryStore {
     return this._lastFtsError;
   }
 
+  set lastFtsError(value: string | null) {
+    this._lastFtsError = typeof value === "string" && value.trim().length > 0
+      ? value
+      : null;
+  }
+
   /** Get FTS index health status */
-  getFtsStatus(): { available: boolean; lastError: string | null } {
+  getFtsStatus(): {
+    available: boolean;
+    supported: boolean;
+    indexExists: boolean;
+    lastError: string | null;
+  } {
     return {
       available: this.ftsIndexCreated,
+      supported: this.ftsSupported,
+      indexExists: this.ftsIndexCreated,
       lastError: this._lastFtsError,
     };
   }
@@ -1039,7 +1109,7 @@ export class MemoryStore {
         }
       }
       // Recreate
-      await this.createFtsIndex(this.table!);
+      await (this as any).createFtsIndex(this.table!, true);
       this.ftsIndexCreated = true;
       this._lastFtsError = null;
       return { success: true };

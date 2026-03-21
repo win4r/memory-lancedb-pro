@@ -9,10 +9,16 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { MemoryRetriever, RetrievalResult } from "./retriever.js";
-import type { MemoryStore } from "./store.js";
+import type { MemoryEntry, MemoryStore } from "./store.js";
 import { isNoise } from "./noise-filter.js";
 import { isSystemBypassId, resolveScopeFilter, parseAgentIdFromSessionKey, type MemoryScopeManager } from "./scopes.js";
 import type { Embedder } from "./embedder.js";
+import {
+  mergeCaptureMetadata,
+  type CaptureMetadataPayload,
+  type CaptureRole,
+  type CaptureSourceApp,
+} from "./capture-pipeline.js";
 import {
   appendRelation,
   buildSmartMetadata,
@@ -42,6 +48,14 @@ export const MEMORY_CATEGORIES = [
   "other",
 ] as const;
 
+const WRITABLE_MEMORY_CATEGORIES = [
+  "preference",
+  "fact",
+  "decision",
+  "entity",
+  "other",
+] as const;
+
 function stringEnum<T extends readonly [string, ...string[]]>(values: T) {
   return Type.Unsafe<T[number]>({
     type: "string",
@@ -53,6 +67,60 @@ export type MdMirrorWriter = (
   meta?: { source?: string; agentId?: string },
 ) => Promise<void>;
 
+export interface CaptureIngressParams {
+  text: string;
+  scope: string;
+  agentId?: string;
+  importance?: number;
+  category?: Exclude<MemoryEntry["category"], "reflection">;
+  sourceApp: CaptureSourceApp;
+  sourceRole: CaptureRole;
+  scoringRole?: CaptureRole;
+  ingestionMode: string;
+  explicitWrite?: boolean;
+  confirmed?: boolean;
+  occurredAt?: number;
+}
+
+export interface CaptureIngressResult {
+  action: "stored" | "updated" | "skipped";
+  reason?: string;
+  entry?: MemoryEntry;
+  matchedExisting?: {
+    id: string;
+    text: string;
+    scope: string;
+    similarity: number;
+  };
+}
+
+export type CaptureIngressWriter = (
+  params: CaptureIngressParams,
+) => Promise<CaptureIngressResult>;
+
+export interface CaptureValidationParams {
+  text: string;
+  sourceApp: CaptureSourceApp;
+  sourceRole: CaptureRole;
+  scoringRole?: CaptureRole;
+  sourceProvider?: string;
+  repetitionCount?: number;
+  ingestionMode?: string;
+  explicitWrite?: boolean;
+  confirmed?: boolean;
+}
+
+export interface CaptureValidationResult {
+  accepted: boolean;
+  reason?: string;
+  text: string;
+  metadataPayload?: CaptureMetadataPayload;
+}
+
+export type CaptureIngressValidator = (
+  params: CaptureValidationParams,
+) => Promise<CaptureValidationResult>;
+
 interface ToolContext {
   retriever: MemoryRetriever;
   store: MemoryStore;
@@ -61,6 +129,8 @@ interface ToolContext {
   agentId?: string;
   workspaceDir?: string;
   mdMirror?: MdMirrorWriter | null;
+  captureIngress?: CaptureIngressWriter | null;
+  captureValidator?: CaptureIngressValidator | null;
   workspaceBoundary?: WorkspaceBoundaryConfig;
 }
 
@@ -174,6 +244,58 @@ function resolveWorkspaceDir(toolCtx: unknown, fallback?: string): string {
 
 function escapeRegExp(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function describeIngressSkipReason(reason?: string): string {
+  switch (reason) {
+    case "empty":
+      return "empty text";
+    case "too-short":
+      return "text too short to persist safely";
+    case "too-long":
+      return "text too long to store as a single memory";
+    case "memory-management":
+      return "memory-management/control text";
+    case "system-noise":
+      return "system/control text";
+    case "code-block-only":
+      return "code-only content without durable memory signal";
+    case "secret-like-content":
+      return "secret-like content";
+    case "assistant-capture-disabled":
+      return "assistant capture disabled";
+    case "assistant-not-memory-like":
+      return "assistant text does not look memory-worthy";
+    case "below-threshold":
+      return "insufficient durable memory signal";
+    case "low-signal":
+      return "insufficient durable memory signal";
+    default:
+      return reason ? `filtered by ingress policy (${reason})` : "filtered by ingress policy";
+  }
+}
+
+function isProtectedWriteCategory(category?: string): boolean {
+  return category === "reflection";
+}
+
+function buildProtectedCategoryResult(category: string) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: `Category '${category}' is reserved for internal reflection storage.`,
+      },
+    ],
+    details: {
+      error: "protected_category",
+      category,
+    },
+  };
+}
+
+function isProtectedEntry(entry: Pick<MemoryEntry, "category"> | null | undefined): boolean {
+  return Boolean(entry && isProtectedWriteCategory(entry.category));
 }
 
 export function registerSelfImprovementLogTool(api: OpenClawPluginApi, context: ToolContext) {
@@ -455,13 +577,14 @@ export function registerMemoryRecallTool(
           scope?: string;
           category?: string;
         };
+        const safeLimit = clampInt(limit, 1, 20);
+        let scopeFilter: string[] | undefined;
 
         try {
-          const safeLimit = clampInt(limit, 1, 20);
           const agentId = runtimeContext.agentId;
 
           // Determine accessible scopes
-          let scopeFilter = resolveScopeFilter(runtimeContext.scopeManager, agentId);
+          scopeFilter = resolveScopeFilter(runtimeContext.scopeManager, agentId);
           if (scope) {
             if (runtimeContext.scopeManager.isAccessible(scope, agentId)) {
               scopeFilter = [scope];
@@ -485,28 +608,26 @@ export function registerMemoryRecallTool(
             category,
             source: "manual",
           }), runtimeContext.workspaceBoundary);
+          const diagnostics =
+            typeof runtimeContext.retriever.getLastDiagnostics === "function"
+              ? runtimeContext.retriever.getLastDiagnostics()
+              : null;
+          const retrievalMode = runtimeContext.retriever.getConfig().mode;
 
           if (results.length === 0) {
             return {
               content: [{ type: "text", text: "No relevant memories found." }],
-              details: { count: 0, query, scopes: scopeFilter },
+              details: {
+                count: 0,
+                query,
+                limit: safeLimit,
+                category,
+                scopes: scopeFilter,
+                retrievalMode,
+                ...(diagnostics ? { diagnostics } : {}),
+              },
             };
           }
-
-          const now = Date.now();
-          await Promise.allSettled(
-            results.map((result) => {
-              const meta = parseSmartMetadata(result.entry.metadata, result.entry);
-              return runtimeContext.store.patchMetadata(
-                result.entry.id,
-                {
-                  access_count: meta.access_count + 1,
-                  last_accessed_at: now,
-                },
-                scopeFilter,
-              );
-            }),
-          );
 
           const text = results
             .map((r, i) => {
@@ -526,11 +647,19 @@ export function registerMemoryRecallTool(
               count: results.length,
               memories: sanitizeMemoryForSerialization(results),
               query,
+              limit: safeLimit,
+              category,
               scopes: scopeFilter,
-              retrievalMode: runtimeContext.retriever.getConfig().mode,
+              retrievalMode,
+              ...(diagnostics ? { diagnostics } : {}),
             },
           };
         } catch (error) {
+          const diagnostics =
+            typeof runtimeContext.retriever.getLastDiagnostics === "function"
+              ? runtimeContext.retriever.getLastDiagnostics()
+              : null;
+          const retrievalMode = runtimeContext.retriever.getConfig().mode;
           return {
             content: [
               {
@@ -538,7 +667,16 @@ export function registerMemoryRecallTool(
                 text: `Memory recall failed: ${error instanceof Error ? error.message : String(error)}`,
               },
             ],
-            details: { error: "recall_failed", message: String(error) },
+            details: {
+              error: "recall_failed",
+              message: String(error),
+              query,
+              limit: safeLimit,
+              category,
+              scopes: scopeFilter,
+              retrievalMode,
+              ...(diagnostics ? { diagnostics } : {}),
+            },
           };
         }
       },
@@ -565,7 +703,7 @@ export function registerMemoryStoreTool(
         importance: Type.Optional(
           Type.Number({ description: "Importance score 0-1 (default: 0.7)" }),
         ),
-        category: Type.Optional(stringEnum(MEMORY_CATEGORIES)),
+        category: Type.Optional(stringEnum(WRITABLE_MEMORY_CATEGORIES)),
         scope: Type.Optional(
           Type.String({
             description: "Memory scope (optional, defaults to agent scope)",
@@ -587,6 +725,9 @@ export function registerMemoryStoreTool(
 
         try {
           const agentId = runtimeContext.agentId;
+          if (isProtectedWriteCategory(category)) {
+            return buildProtectedCategoryResult(category);
+          }
           // Determine target scope
           let targetScope = scope;
           if (!targetScope) {
@@ -657,6 +798,60 @@ export function registerMemoryStoreTool(
           }
 
           const safeImportance = clamp01(importance, 0.7);
+          if (context.captureIngress) {
+            const captureResult = await context.captureIngress({
+              text,
+              scope: targetScope,
+              importance: safeImportance,
+              category: category as Exclude<MemoryEntry["category"], "reflection">,
+              sourceApp: "openclaw",
+              sourceRole: "assistant",
+              scoringRole: "user",
+              ingestionMode: "memory_store",
+              explicitWrite: true,
+              confirmed: true,
+              agentId,
+            });
+
+            if (captureResult.action === "skipped") {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `Skipped: ${describeIngressSkipReason(captureResult.reason)}`,
+                  },
+                ],
+                details: {
+                  action: "skipped",
+                  reason: captureResult.reason || "filtered",
+                  scope: targetScope,
+                },
+              };
+            }
+
+            const persisted = captureResult.entry;
+            const verb = captureResult.action === "updated"
+              ? "Updated similar memory"
+              : "Stored";
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `${verb}: "${text.slice(0, 100)}${text.length > 100 ? "..." : ""}" in scope '${targetScope}'`,
+                },
+              ],
+              details: {
+                action: captureResult.action,
+                id: persisted?.id,
+                scope: persisted?.scope || targetScope,
+                category: persisted?.category || category,
+                importance: persisted?.importance ?? safeImportance,
+                existingId: captureResult.matchedExisting?.id,
+                similarity: captureResult.matchedExisting?.similarity,
+              },
+            };
+          }
+
           const vector = await runtimeContext.embedder.embedPassage(text);
 
           // Check for duplicates using raw vector similarity (bypasses importance/recency weighting)
@@ -807,6 +1002,22 @@ export function registerMemoryForgetTool(
           }
 
           if (memoryId) {
+            const existing = await context.store.resolveByIdOrPrefix(memoryId);
+            if (!existing || !scopeFilter.includes(existing.scope)) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `Memory ${memoryId} not found or access denied.`,
+                  },
+                ],
+                details: { error: "not_found", id: memoryId },
+              };
+            }
+            if (isProtectedEntry(existing)) {
+              return buildProtectedCategoryResult(existing.category);
+            }
+
             const deleted = await context.store.delete(memoryId, scopeFilter);
             if (deleted) {
               return {
@@ -834,19 +1045,24 @@ export function registerMemoryForgetTool(
               limit: 5,
               scopeFilter,
             });
+            const editableResults = results.filter((row) => !isProtectedEntry(row.entry));
 
-            if (results.length === 0) {
+            if (editableResults.length === 0) {
               return {
                 content: [
-                  { type: "text", text: "No matching memories found." },
+                  { type: "text", text: "No matching editable memories found." },
                 ],
-                details: { found: 0, query },
+                details: {
+                  found: 0,
+                  query,
+                  protectedFiltered: results.length,
+                },
               };
             }
 
-            if (results.length === 1 && results[0].score > 0.9) {
+            if (editableResults.length === 1 && editableResults[0].score > 0.9) {
               const deleted = await context.store.delete(
-                results[0].entry.id,
+                editableResults[0].entry.id,
                 scopeFilter,
               );
               if (deleted) {
@@ -854,15 +1070,15 @@ export function registerMemoryForgetTool(
                   content: [
                     {
                       type: "text",
-                      text: `Forgotten: "${results[0].entry.text}"`,
+                      text: `Forgotten: "${editableResults[0].entry.text}"`,
                     },
                   ],
-                  details: { action: "deleted", id: results[0].entry.id },
+                  details: { action: "deleted", id: editableResults[0].entry.id },
                 };
               }
             }
 
-            const list = results
+            const list = editableResults
               .map(
                 (r) =>
                   `- [${r.entry.id.slice(0, 8)}] ${r.entry.text.slice(0, 60)}${r.entry.text.length > 60 ? "..." : ""}`,
@@ -873,12 +1089,13 @@ export function registerMemoryForgetTool(
               content: [
                 {
                   type: "text",
-                  text: `Found ${results.length} candidates. Specify memoryId to delete:\n${list}`,
+                  text: `Found ${editableResults.length} candidates. Specify memoryId to delete:\n${list}`,
                 },
               ],
               details: {
                 action: "candidates",
-                candidates: sanitizeMemoryForSerialization(results),
+                candidates: sanitizeMemoryForSerialization(editableResults),
+                protectedFiltered: results.length - editableResults.length,
               },
             };
           }
@@ -950,6 +1167,9 @@ export function registerMemoryUpdateTool(
         };
 
         try {
+          if (isProtectedWriteCategory(category)) {
+            return buildProtectedCategoryResult(category);
+          }
           if (!text && importance === undefined && !category) {
             return {
               content: [
@@ -968,6 +1188,7 @@ export function registerMemoryUpdateTool(
 
           // Resolve memoryId: if it doesn't look like a UUID, try search
           let resolvedId = memoryId;
+          let resolvedEntry: MemoryEntry | null = null;
           const uuidLike = /^[0-9a-f]{8}(-[0-9a-f]{4}){0,4}/i.test(memoryId);
           if (!uuidLike) {
             // Treat as search query
@@ -989,6 +1210,7 @@ export function registerMemoryUpdateTool(
             }
             if (results.length === 1 || results[0].score > 0.85) {
               resolvedId = results[0].entry.id;
+              resolvedEntry = results[0].entry;
             } else {
               const list = results
                 .map(
@@ -1013,8 +1235,58 @@ export function registerMemoryUpdateTool(
 
           // If text changed, re-embed; reject noise
           let newVector: number[] | undefined;
+          let nextText = text;
+          let nextMetadata: string | undefined;
+          if (!resolvedEntry) {
+            resolvedEntry = await context.store.resolveByIdOrPrefix(resolvedId);
+          }
+          if (!resolvedEntry || !scopeFilter.includes(resolvedEntry.scope)) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Memory ${resolvedId.slice(0, 8)}... not found or access denied.`,
+                },
+              ],
+              details: { error: "not_found", id: resolvedId },
+            };
+          }
+          if (isProtectedEntry(resolvedEntry)) {
+            return buildProtectedCategoryResult(resolvedEntry.category);
+          }
           if (text) {
-            if (isNoise(text)) {
+            if (context.captureValidator) {
+              const validation = await context.captureValidator({
+                text,
+                sourceApp: "openclaw",
+                sourceRole: "assistant",
+                scoringRole: "user",
+                ingestionMode: "memory_update",
+                explicitWrite: true,
+                confirmed: true,
+              });
+              if (!validation.accepted) {
+                return {
+                  content: [
+                    {
+                      type: "text",
+                      text: `Skipped: ${describeIngressSkipReason(validation.reason)}`,
+                    },
+                  ],
+                  details: {
+                    action: "skipped",
+                    reason: validation.reason || "filtered",
+                  },
+                };
+              }
+              nextText = validation.text;
+              if (validation.metadataPayload) {
+                nextMetadata = mergeCaptureMetadata(
+                  resolvedEntry.metadata,
+                  validation.metadataPayload,
+                );
+              }
+            } else if (isNoise(text)) {
               return {
                 content: [
                   {
@@ -1025,28 +1297,28 @@ export function registerMemoryUpdateTool(
                 details: { action: "noise_filtered" },
               };
             }
-            newVector = await context.embedder.embedPassage(text);
+            newVector = await context.embedder.embedPassage(nextText);
           }
 
           // --- Temporal supersede guard ---
           // For temporal-versioned categories (preferences/entities), changing
           // text must go through supersede to preserve the history chain.
           if (text && newVector) {
-            const existing = await context.store.getById(resolvedId, scopeFilter);
+            const existing = resolvedEntry;
             if (existing) {
               const meta = parseSmartMetadata(existing.metadata, existing);
               if (TEMPORAL_VERSIONED_CATEGORIES.has(meta.memory_category)) {
                 const now = Date.now();
                 const factKey =
-                  meta.fact_key ?? deriveFactKey(meta.memory_category, text);
+                  meta.fact_key ?? deriveFactKey(meta.memory_category, nextText);
 
                 // Create new superseding record
                 const newMeta = buildSmartMetadata(
-                  { text, category: existing.category },
+                  { text: nextText, category: existing.category },
                   {
-                    l0_abstract: text,
+                    l0_abstract: nextText,
                     l1_overview: meta.l1_overview,
-                    l2_content: text,
+                    l2_content: nextText,
                     memory_category: meta.memory_category,
                     tier: meta.tier,
                     access_count: 0,
@@ -1062,7 +1334,7 @@ export function registerMemoryUpdateTool(
                 );
 
                 const newEntry = await context.store.store({
-                  text,
+                  text: nextText,
                   vector: newVector,
                   category: category ? (category as any) : existing.category,
                   scope: existing.scope,
@@ -1100,7 +1372,7 @@ export function registerMemoryUpdateTool(
                   content: [
                     {
                       type: "text",
-                      text: `Superseded memory ${resolvedId.slice(0, 8)}... → new version ${newEntry.id.slice(0, 8)}...: "${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`,
+                      text: `Superseded memory ${resolvedId.slice(0, 8)}... → new version ${newEntry.id.slice(0, 8)}...: "${nextText.slice(0, 80)}${nextText.length > 80 ? "..." : ""}"`,
                     },
                   ],
                   details: {
@@ -1116,8 +1388,9 @@ export function registerMemoryUpdateTool(
           // --- End temporal supersede guard ---
 
           const updates: Record<string, any> = {};
-          if (text) updates.text = text;
+          if (text) updates.text = nextText;
           if (newVector) updates.vector = newVector;
+          if (text && nextMetadata) updates.metadata = nextMetadata;
           if (importance !== undefined)
             updates.importance = clamp01(importance, 0.7);
           if (category) updates.category = category;

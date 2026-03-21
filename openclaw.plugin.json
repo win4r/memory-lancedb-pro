@@ -127,6 +127,138 @@
         "default": 8000,
         "description": "Maximum conversation characters sent to the smart extraction LLM."
       },
+      "capturePolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "candidateMinScore": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10,
+            "default": 4,
+            "description": "Minimum score to write a candidate memory. 0-10 scale."
+          },
+          "formalMinScore": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10,
+            "default": 8,
+            "description": "Minimum score to promote a memory into the formal tier. 0-10 scale."
+          },
+          "assistantMaxScore": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10,
+            "default": 5,
+            "description": "Unconfirmed assistant summaries are capped at this score to keep them in the candidate pool by default."
+          },
+          "includeCandidateInRecall": {
+            "type": "boolean",
+            "default": false,
+            "description": "Allow candidate-tier memories to participate in auto-recall. Recommended: keep disabled."
+          }
+        }
+      },
+      "externalIngestion": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable standalone transcript ingestion outside the OpenClaw chat window."
+          },
+          "scanIntervalMs": {
+            "type": "integer",
+            "minimum": 60000,
+            "default": 600000,
+            "description": "Fallback full scan interval. Real-time capture prefers filesystem watchers."
+          },
+          "inactivityWindowMs": {
+            "type": "integer",
+            "minimum": 60000,
+            "default": 180000,
+            "description": "Only finalize transcript files after they stay unchanged for at least this long."
+          },
+          "sources": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "claude": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "roots": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Directories containing Claude JSONL conversation logs."
+                  },
+                  "includeSubagents": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "maxFilesPerScan": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500,
+                    "default": 40
+                  }
+                }
+              },
+              "codex": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "roots": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Directories containing Codex rollout JSONL sessions."
+                  },
+                  "maxFilesPerScan": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500,
+                    "default": 40
+                  }
+                }
+              },
+              "wechat": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "roots": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Reserved placeholder roots for future WeChat capture."
+                  },
+                  "placeholder": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "retrieval": {
         "type": "object",
         "additionalProperties": false,
@@ -150,6 +282,11 @@
             "minimum": 0,
             "maximum": 1,
             "default": 0.3
+          },
+          "queryExpansion": {
+            "type": "boolean",
+            "default": true,
+            "description": "Expand manual and CLI BM25 queries with a small synonym dictionary. Does not affect vector search or auto-recall."
           },
           "minScore": {
             "type": "number",
@@ -620,7 +757,92 @@
     },
     "captureAssistant": {
       "label": "Capture Assistant Messages",
-      "help": "Also auto-capture assistant messages (default false to reduce memory pollution)",
+      "help": "Allow assistant-side capture. Unconfirmed assistant summaries are still capped into the candidate pool by the scoring policy.",
+      "advanced": true
+    },
+    "capturePolicy.candidateMinScore": {
+      "label": "Candidate Score Threshold",
+      "help": "Minimum 0-10 score required to write a candidate memory.",
+      "advanced": true
+    },
+    "capturePolicy.formalMinScore": {
+      "label": "Formal Score Threshold",
+      "help": "Minimum 0-10 score required to promote a formal memory.",
+      "advanced": true
+    },
+    "capturePolicy.assistantMaxScore": {
+      "label": "Assistant Score Cap",
+      "help": "Unconfirmed assistant summaries cannot score above this cap.",
+      "advanced": true
+    },
+    "capturePolicy.includeCandidateInRecall": {
+      "label": "Recall Candidate Tier",
+      "help": "Whether candidate-tier memories can join generic auto-recall.",
+      "advanced": true
+    },
+    "externalIngestion.enabled": {
+      "label": "Enable External Ingestion",
+      "help": "Scan standalone Claude/Codex transcripts and feed them into the same memory pipeline.",
+      "advanced": true
+    },
+    "externalIngestion.scanIntervalMs": {
+      "label": "External Scan Interval",
+      "help": "Fallback full-scan interval in milliseconds. File watchers handle near-real-time updates.",
+      "advanced": true
+    },
+    "externalIngestion.inactivityWindowMs": {
+      "label": "External Idle Window",
+      "help": "Only finalize transcript files after they stay unchanged for this many milliseconds.",
+      "advanced": true
+    },
+    "externalIngestion.sources.claude.enabled": {
+      "label": "Capture Claude",
+      "help": "Capture standalone Claude JSONL conversations.",
+      "advanced": true
+    },
+    "externalIngestion.sources.claude.roots": {
+      "label": "Claude Roots",
+      "help": "Directories containing Claude project transcripts.",
+      "advanced": true
+    },
+    "externalIngestion.sources.claude.includeSubagents": {
+      "label": "Claude Subagents",
+      "help": "Include Claude subagent JSONL logs as well.",
+      "advanced": true
+    },
+    "externalIngestion.sources.claude.maxFilesPerScan": {
+      "label": "Claude File Limit",
+      "help": "Maximum number of Claude transcript files to inspect per scan.",
+      "advanced": true
+    },
+    "externalIngestion.sources.codex.enabled": {
+      "label": "Capture Codex",
+      "help": "Capture standalone Codex rollout sessions.",
+      "advanced": true
+    },
+    "externalIngestion.sources.codex.roots": {
+      "label": "Codex Roots",
+      "help": "Directories containing Codex rollout JSONL files.",
+      "advanced": true
+    },
+    "externalIngestion.sources.codex.maxFilesPerScan": {
+      "label": "Codex File Limit",
+      "help": "Maximum number of Codex rollout files to inspect per scan.",
+      "advanced": true
+    },
+    "externalIngestion.sources.wechat.enabled": {
+      "label": "WeChat Placeholder",
+      "help": "Reserved switch for future WeChat capture. Currently logs a placeholder only.",
+      "advanced": true
+    },
+    "externalIngestion.sources.wechat.roots": {
+      "label": "WeChat Roots",
+      "help": "Reserved directories for future WeChat capture.",
+      "advanced": true
+    },
+    "externalIngestion.sources.wechat.placeholder": {
+      "label": "Keep WeChat Placeholder",
+      "help": "Keeps the WeChat source slot visible while the collector is not implemented.",
       "advanced": true
     },
     "retrieval.mode": {
@@ -636,6 +858,11 @@
     "retrieval.bm25Weight": {
       "label": "BM25 Search Weight",
       "help": "Weight for BM25 keyword search in hybrid search (0-1)",
+      "advanced": true
+    },
+    "retrieval.queryExpansion": {
+      "label": "BM25 Query Expansion",
+      "help": "Expand manual and CLI BM25 queries with a small local synonym dictionary. Does not affect auto-recall.",
       "advanced": true
     },
     "retrieval.minScore": {

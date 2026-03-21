@@ -21,7 +21,12 @@ import { createScopeManager, resolveScopeFilter, isSystemBypassId, parseAgentIdF
 import { createMigrator } from "./src/migrate.js";
 import { registerAllMemoryTools } from "./src/tools.js";
 import { appendSelfImprovementEntry, ensureSelfImprovementLearningFiles } from "./src/self-improvement-files.js";
-import type { MdMirrorWriter } from "./src/tools.js";
+import type {
+  CaptureIngressResult,
+  CaptureIngressValidator,
+  CaptureIngressWriter,
+  MdMirrorWriter,
+} from "./src/tools.js";
 import { shouldSkipRetrieval } from "./src/adaptive-retrieval.js";
 import { runWithReflectionTransientRetryOnce } from "./src/reflection-retry.js";
 import { resolveReflectionSessionSearchDirs, stripResetSuffix } from "./src/session-recovery.js";
@@ -57,6 +62,21 @@ import {
   isUserMdExclusiveMemory,
   type WorkspaceBoundaryConfig,
 } from "./src/workspace-boundary.js";
+import {
+  DEFAULT_CAPTURE_POLICY,
+  detectMemoryCategory,
+  mergeCaptureMetadata,
+  parseCaptureMetadata,
+  scoreMemoryCandidate,
+  type CapturePolicyConfig,
+  type CaptureRole,
+  type CaptureSourceApp,
+} from "./src/capture-pipeline.js";
+import {
+  createExternalIngestionManager,
+  type ExternalCaptureCandidate,
+  type ExternalIngestionConfig,
+} from "./src/external-ingestion.js";
 
 // ============================================================================
 // Configuration & Types
@@ -80,10 +100,12 @@ interface PluginConfig {
   autoRecallMinLength?: number;
   autoRecallMinRepeated?: number;
   captureAssistant?: boolean;
+  capturePolicy?: CapturePolicyConfig;
   retrieval?: {
     mode?: "hybrid" | "vector";
     vectorWeight?: number;
     bm25Weight?: number;
+    queryExpansion?: boolean;
     minScore?: number;
     rerank?: "cross-encoder" | "lightweight" | "none";
     candidatePoolSize?: number;
@@ -95,6 +117,7 @@ interface PluginConfig {
       | "siliconflow"
       | "voyage"
       | "pinecone"
+      | "vllm"
       | "dashscope"
       | "tei";
     recencyHalfLifeDays?: number;
@@ -106,6 +129,7 @@ interface PluginConfig {
     reinforcementFactor?: number;
     maxHalfLifeMultiplier?: number;
   };
+  externalIngestion?: ExternalIngestionConfig;
   decay?: {
     recencyHalfLifeDays?: number;
     recencyWeight?: number;
@@ -228,6 +252,29 @@ function parsePositiveInt(value: unknown): number | undefined {
     if (Number.isFinite(n) && n > 0) return Math.floor(n);
   }
   return undefined;
+}
+
+function parseNonNegativeNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return undefined;
+    const resolved = resolveEnvVars(s);
+    const n = Number(resolved);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return undefined;
+}
+
+function parseStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const parsed = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => resolveEnvVars(item.trim()))
+    .filter((item) => item.length > 0);
+  return parsed.length > 0 ? parsed : undefined;
 }
 
 function resolveLlmTimeoutMs(config: PluginConfig): number {
@@ -1999,6 +2046,245 @@ const memoryLanceDBProPlugin = {
     // ========================================================================
 
     const mdMirror = createMdMirrorWriter(api, config);
+    const capturePolicy: CapturePolicyConfig = {
+      ...DEFAULT_CAPTURE_POLICY,
+      ...(config.capturePolicy || {}),
+    };
+    const externalDefaultScope = config.scopes?.default ?? "global";
+
+    const captureValidator: CaptureIngressValidator = async (params) => {
+      const sanitizedText = redactSecrets(String(params.text || "")).trim();
+      const scored = scoreMemoryCandidate(
+        {
+          text: sanitizedText,
+          role: (params.scoringRole ?? params.sourceRole) as CaptureRole,
+          sourceApp: params.sourceApp,
+          sourceProvider: params.sourceProvider,
+          confirmed: params.confirmed,
+          repetitionCount: params.repetitionCount,
+          captureAssistant: config.captureAssistant === true,
+        },
+        capturePolicy,
+      );
+
+      const explicitWriteSoftReject =
+        params.explicitWrite === true &&
+        (
+          scored.rejectedReason === "too-long" ||
+          scored.rejectedReason === "too-short" ||
+          scored.rejectedReason === "assistant-capture-disabled" ||
+          scored.rejectedReason === "assistant-not-memory-like" ||
+          scored.rejectedReason === "below-threshold" ||
+          scored.rejectedReason === "low-signal"
+        );
+
+      if (scored.rejectedReason && !explicitWriteSoftReject) {
+        return {
+          accepted: false,
+          reason: scored.rejectedReason,
+          text: sanitizedText,
+        };
+      }
+
+      const captureReasons = [...new Set([
+        ...(scored.reasons || []),
+        ...(params.explicitWrite === true ? ["explicit-tool-request"] : []),
+      ])].slice(0, 8);
+
+      return {
+        accepted: true,
+        text: sanitizedText,
+        metadataPayload: {
+          memoryTier: scored.tier === "discard" ? "formal" : scored.tier,
+          captureScore:
+            scored.score > 0 ? scored.score : capturePolicy.formalMinScore,
+          captureReasons,
+          normalizedKey: scored.normalizedKey,
+          sourceApp: params.sourceApp,
+          sourceRole: params.sourceRole,
+          sourceProvider: params.sourceProvider,
+          ingestionMode: params.ingestionMode,
+          confirmed: params.confirmed,
+          occurredAt: params.occurredAt,
+        },
+      };
+    };
+
+    const persistCapturedText = async (params: {
+      text: string;
+      scope: string;
+      importance?: number;
+      category?: "preference" | "fact" | "decision" | "entity" | "other";
+      sourceApp: CaptureSourceApp;
+      sourceRole: CaptureRole;
+      scoringRole?: CaptureRole;
+      sourceProvider?: string;
+      sourcePath?: string;
+      sourceSessionId?: string;
+      sourceModel?: string;
+      sourceWorkspace?: string;
+      ingestionMode: string;
+      explicitWrite?: boolean;
+      confirmed?: boolean;
+      occurredAt?: number;
+      repetitionCount?: number;
+      vector?: number[];
+      agentId?: string;
+      additionalMetadata?: Record<string, unknown>;
+    }): Promise<CaptureIngressResult> => {
+      const validation = await captureValidator({
+        text: params.text,
+        sourceApp: params.sourceApp,
+        sourceRole: params.sourceRole,
+        scoringRole: params.scoringRole,
+        sourceProvider: params.sourceProvider,
+        repetitionCount: params.repetitionCount,
+        ingestionMode: params.ingestionMode,
+        explicitWrite: params.explicitWrite,
+        confirmed: params.confirmed,
+      });
+
+      if (!validation.accepted || !validation.metadataPayload) {
+        return {
+          action: "skipped",
+          reason: validation.reason || "filtered",
+        };
+      }
+
+      if (isUserMdExclusiveMemory({ text: validation.text }, config.workspaceBoundary)) {
+        return {
+          action: "skipped",
+          reason: "user-md-exclusive",
+        };
+      }
+
+      const category = params.category || detectMemoryCategory(validation.text);
+      const importance =
+        typeof params.importance === "number" && Number.isFinite(params.importance)
+          ? Math.max(0, Math.min(1, params.importance))
+          : validation.metadataPayload.memoryTier === "formal"
+            ? 0.8
+            : 0.65;
+      const captureMetadata = parseCaptureMetadata(mergeCaptureMetadata(undefined, {
+        ...validation.metadataPayload,
+        sourcePath: params.sourcePath,
+        sourceSessionId: params.sourceSessionId,
+        sourceModel: params.sourceModel,
+        sourceWorkspace: params.sourceWorkspace,
+      }));
+      const metadata = JSON.stringify({
+        ...(params.additionalMetadata || {}),
+        ...captureMetadata,
+      });
+      const vector = Array.isArray(params.vector) && params.vector.length > 0
+        ? params.vector
+        : await embedder.embedPassage(validation.text);
+
+      let existing: Awaited<ReturnType<typeof store.vectorSearch>> = [];
+      try {
+        existing = await store.vectorSearch(vector, 1, 0.1, [params.scope]);
+      } catch (error) {
+        api.logger.warn(
+          `memory-lancedb-pro: capture duplicate pre-check failed, continuing write: ${String(error)}`,
+        );
+      }
+
+      if (existing.length > 0 && existing[0].score > 0.98) {
+        const matched = existing[0];
+        const mergedCaptureMetadata = parseCaptureMetadata(mergeCaptureMetadata(matched.entry.metadata, {
+          ...validation.metadataPayload,
+          sourcePath: params.sourcePath,
+          sourceSessionId: params.sourceSessionId,
+          sourceModel: params.sourceModel,
+          sourceWorkspace: params.sourceWorkspace,
+        }));
+        const mergedMetadata = JSON.stringify({
+          ...parseCaptureMetadata(matched.entry.metadata),
+          ...(params.additionalMetadata || {}),
+          ...mergedCaptureMetadata,
+        });
+        const updated = await store.update(
+          matched.entry.id,
+          {
+            metadata: mergedMetadata,
+            importance: Math.max(matched.entry.importance ?? 0.7, importance),
+            category: params.category || matched.entry.category,
+          },
+          [params.scope],
+        );
+        if (updated && mdMirror) {
+          await mdMirror(
+            { text: updated.text, category: updated.category, scope: updated.scope, timestamp: updated.timestamp },
+            { source: params.ingestionMode, agentId: params.agentId },
+          );
+        }
+        return {
+          action: "updated",
+          entry: updated ?? matched.entry,
+          matchedExisting: {
+            id: matched.entry.id,
+            text: matched.entry.text,
+            scope: matched.entry.scope,
+            similarity: matched.score,
+          },
+        };
+      }
+
+      const entry = await store.store({
+        text: validation.text,
+        vector,
+        importance,
+        category,
+        scope: params.scope,
+        metadata,
+      });
+      if (mdMirror) {
+        await mdMirror(
+          { text: entry.text, category: entry.category, scope: entry.scope, timestamp: entry.timestamp },
+          { source: params.ingestionMode, agentId: params.agentId },
+        );
+      }
+      return {
+        action: "stored",
+        entry,
+      };
+    };
+
+    const captureIngress: CaptureIngressWriter = async (params) =>
+      persistCapturedText({
+        ...params,
+        scope: params.scope,
+      });
+
+    const externalIngestionManager = createExternalIngestionManager({
+      config: config.externalIngestion,
+      stateFilePath: api.resolvePath(join(resolvedDbPath, "external-ingestion-state.json")),
+      logger: api.logger,
+      onCandidates: async (items: ExternalCaptureCandidate[]) => {
+        for (const item of items) {
+          try {
+            await persistCapturedText({
+              text: item.text,
+              scope: externalDefaultScope,
+              sourceApp: item.sourceApp,
+              sourceRole: item.role,
+              sourceProvider: item.sourceProvider,
+              sourcePath: item.sourcePath,
+              sourceSessionId: item.sourceSessionId,
+              sourceModel: item.sourceModel,
+              sourceWorkspace: item.sourceWorkspace,
+              occurredAt: item.occurredAt,
+              ingestionMode: "external-ingestion",
+              confirmed: item.role === "user",
+            });
+          } catch (error) {
+            api.logger.warn(
+              `memory-lancedb-pro: external ingestion persist failed for ${item.sourceApp}: ${String(error)}`,
+            );
+          }
+        }
+      },
+    });
 
     // ========================================================================
     // Register Tools
@@ -2014,6 +2300,8 @@ const memoryLanceDBProPlugin = {
         agentId: undefined, // Will be determined at runtime from context
         workspaceDir: getDefaultWorkspaceDir(),
         mdMirror,
+        captureIngress,
+        captureValidator,
         workspaceBoundary: config.workspaceBoundary,
       },
       {
@@ -2935,22 +3223,8 @@ const memoryLanceDBProPlugin = {
 
           const mappedReflectionMemories = extractInjectableReflectionMappedMemoryItems(reflectionText);
           for (const mapped of mappedReflectionMemories) {
-            const vector = await embedder.embedPassage(mapped.text);
-            let existing: Awaited<ReturnType<typeof store.vectorSearch>> = [];
-            try {
-              existing = await store.vectorSearch(vector, 1, 0.1, [targetScope]);
-            } catch (err) {
-              api.logger.warn(
-                `memory-reflection: mapped memory duplicate pre-check failed, continue store: ${String(err)}`,
-              );
-            }
-
-            if (existing.length > 0 && existing[0].score > 0.95) {
-              continue;
-            }
-
             const importance = mapped.category === "decision" ? 0.85 : 0.8;
-            const metadata = JSON.stringify(buildReflectionMappedMetadata({
+            const reflectionMetadata = buildReflectionMappedMetadata({
               mappedItem: mapped,
               eventId: reflectionEventId,
               agentId: sourceAgentId,
@@ -2960,23 +3234,23 @@ const memoryLanceDBProPlugin = {
               usedFallback: reflectionGenerated.usedFallback,
               toolErrorSignals,
               sourceReflectionPath: relPath,
-            }));
+            });
 
-            const storedEntry = await store.store({
+            await persistCapturedText({
               text: mapped.text,
-              vector,
               importance,
               category: mapped.category,
               scope: targetScope,
-              metadata,
+              sourceApp: "openclaw",
+              sourceRole: "assistant",
+              scoringRole: "assistant",
+              ingestionMode: `reflection:${mapped.heading}`,
+              explicitWrite: true,
+              confirmed: true,
+              occurredAt: nowTs,
+              agentId: sourceAgentId,
+              additionalMetadata: reflectionMetadata,
             });
-
-            if (mdMirror) {
-              await mdMirror(
-                { text: mapped.text, category: mapped.category, scope: targetScope, timestamp: storedEntry.timestamp },
-                { source: `reflection:${mapped.heading}`, agentId: sourceAgentId },
-              );
-            }
           }
 
           if (reflectionStoreToLanceDB) {
@@ -3304,12 +3578,14 @@ const memoryLanceDBProPlugin = {
         // Run initial backup after a short delay, then schedule daily
         setTimeout(() => void runBackup(), 60_000); // 1 min after start
         backupTimer = setInterval(() => void runBackup(), BACKUP_INTERVAL_MS);
+        await externalIngestionManager.start();
       },
       stop: async () => {
         if (backupTimer) {
           clearInterval(backupTimer);
           backupTimer = null;
         }
+        await externalIngestionManager.stop().catch(() => {});
         api.logger.info("memory-lancedb-pro: stopped");
       },
     });
@@ -3362,6 +3638,24 @@ export function parsePluginConfig(value: unknown): PluginConfig {
   const workspaceBoundaryRaw = typeof cfg.workspaceBoundary === "object" && cfg.workspaceBoundary !== null
     ? cfg.workspaceBoundary as Record<string, unknown>
     : null;
+  const capturePolicyRaw = typeof cfg.capturePolicy === "object" && cfg.capturePolicy !== null
+    ? cfg.capturePolicy as Record<string, unknown>
+    : null;
+  const externalIngestionRaw = typeof cfg.externalIngestion === "object" && cfg.externalIngestion !== null
+    ? cfg.externalIngestion as Record<string, unknown>
+    : null;
+  const externalSourcesRaw = typeof externalIngestionRaw?.sources === "object" && externalIngestionRaw.sources !== null
+    ? externalIngestionRaw.sources as Record<string, unknown>
+    : null;
+  const externalClaudeRaw = typeof externalSourcesRaw?.claude === "object" && externalSourcesRaw.claude !== null
+    ? externalSourcesRaw.claude as Record<string, unknown>
+    : null;
+  const externalCodexRaw = typeof externalSourcesRaw?.codex === "object" && externalSourcesRaw.codex !== null
+    ? externalSourcesRaw.codex as Record<string, unknown>
+    : null;
+  const externalWechatRaw = typeof externalSourcesRaw?.wechat === "object" && externalSourcesRaw.wechat !== null
+    ? externalSourcesRaw.wechat as Record<string, unknown>
+    : null;
   const userMdExclusiveRaw = typeof workspaceBoundaryRaw?.userMdExclusive === "object" && workspaceBoundaryRaw.userMdExclusive !== null
     ? workspaceBoundaryRaw.userMdExclusive as Record<string, unknown>
     : null;
@@ -3384,6 +3678,18 @@ export function parsePluginConfig(value: unknown): PluginConfig {
   const reflectionStoreToLanceDB =
     sessionStrategy === "memoryReflection" &&
     (memoryReflectionRaw?.storeToLanceDB !== false);
+  const captureCandidateMinScore = Math.max(
+    0,
+    Math.min(10, parseNonNegativeNumber(capturePolicyRaw?.candidateMinScore) ?? DEFAULT_CAPTURE_POLICY.candidateMinScore),
+  );
+  const captureFormalMinScore = Math.max(
+    captureCandidateMinScore,
+    Math.min(10, parseNonNegativeNumber(capturePolicyRaw?.formalMinScore) ?? DEFAULT_CAPTURE_POLICY.formalMinScore),
+  );
+  const captureAssistantMaxScore = Math.max(
+    0,
+    Math.min(captureFormalMinScore, parseNonNegativeNumber(capturePolicyRaw?.assistantMaxScore) ?? DEFAULT_CAPTURE_POLICY.assistantMaxScore),
+  );
 
   return {
     embedding: {
@@ -3424,7 +3730,36 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     autoRecallMinLength: parsePositiveInt(cfg.autoRecallMinLength),
     autoRecallMinRepeated: parsePositiveInt(cfg.autoRecallMinRepeated),
     captureAssistant: cfg.captureAssistant === true,
+    capturePolicy: {
+      candidateMinScore: captureCandidateMinScore,
+      formalMinScore: captureFormalMinScore,
+      assistantMaxScore: captureAssistantMaxScore,
+      includeCandidateInRecall: capturePolicyRaw?.includeCandidateInRecall === true,
+    },
     retrieval: typeof cfg.retrieval === "object" && cfg.retrieval !== null ? cfg.retrieval as any : undefined,
+    externalIngestion: {
+      enabled: externalIngestionRaw?.enabled === true,
+      scanIntervalMs: parsePositiveInt(externalIngestionRaw?.scanIntervalMs),
+      inactivityWindowMs: parsePositiveInt(externalIngestionRaw?.inactivityWindowMs),
+      sources: {
+        claude: {
+          enabled: externalClaudeRaw?.enabled === true,
+          roots: parseStringArray(externalClaudeRaw?.roots),
+          includeSubagents: externalClaudeRaw?.includeSubagents !== false,
+          maxFilesPerScan: parsePositiveInt(externalClaudeRaw?.maxFilesPerScan),
+        },
+        codex: {
+          enabled: externalCodexRaw?.enabled === true,
+          roots: parseStringArray(externalCodexRaw?.roots),
+          maxFilesPerScan: parsePositiveInt(externalCodexRaw?.maxFilesPerScan),
+        },
+        wechat: {
+          enabled: externalWechatRaw?.enabled === true,
+          roots: parseStringArray(externalWechatRaw?.roots),
+          placeholder: externalWechatRaw?.placeholder !== false,
+        },
+      },
+    },
     decay: typeof cfg.decay === "object" && cfg.decay !== null ? cfg.decay as any : undefined,
     tier: typeof cfg.tier === "object" && cfg.tier !== null ? cfg.tier as any : undefined,
     // Smart extraction config (Phase 1)
