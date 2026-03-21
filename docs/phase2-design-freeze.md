@@ -84,6 +84,7 @@ Revised requirement:
     - preferred target: a dedicated per-agent workspace subtree such as `memory/plugin-memory-pro/`
     - do not mix plugin-generated output into the human-authored top-level `memory/YYYY-MM-DD.md` files
     - include a small `README.md` / `STATEMENT.md` in that subtree explaining why the files exist
+    - keep the initial write-path minimal; do not assume extra derived subpaths until implementation actually requires them
   - maintain SQLite-backed legacy memory continuity as well
 
 #### During disable/uninstall
@@ -170,7 +171,7 @@ Implement SQLite preview / dry-run import semantics
 Implement controlled real import with dedupe/filtering
 
 ### Step 5
-Implement reversible Markdown-compatible sync/backfill for durable memories, targeting a dedicated per-agent workspace subtree such as `memory/plugin-memory-pro/`
+Implement reversible Markdown-compatible sync/backfill for durable memories, targeting a dedicated per-agent workspace subtree such as `memory/plugin-memory-pro/` with `README.md` and dated Markdown files as the initial contract
 
 ### Step 6
 Implement or preserve SQLite continuity alongside that Markdown subtree so the legacy OpenClaw path does not go stale during plugin-enabled runtime
@@ -192,6 +193,6 @@ Update skill/docs so agents prefer `memory-lancedb-pro` retrieval while treating
 1. **Markdown-first** for historical import when Markdown and SQLite overlap
 2. **SQLite detected and previewed**, but not assumed to be the canonical human-authored write target
 3. **Hybrid sync strategy** preferred: LanceDB primary runtime layer + dedicated per-agent compatibility Markdown subtree (for example `memory/plugin-memory-pro/`) + ongoing SQLite continuity
-4. **Plugin-generated Markdown should not be mixed into** human-authored top-level `memory/YYYY-MM-DD.md` daily logs; the frozen target is a subtree rooted at `memory/plugin-memory-pro/` with `README.md`, `daily/`, and later canonical `entries/`
+4. **Plugin-generated Markdown should not be mixed into** human-authored top-level `memory/YYYY-MM-DD.md` daily logs; the frozen target is a subtree rooted at `memory/plugin-memory-pro/` with `README.md` plus dated Markdown files, and should not assume deeper derived subpaths yet
 5. **Preview-first CLI** before any broad destructive import
 6. **Skill/docs should prefer LanceDB retrieval** once enabled, while preserving legacy compatibility layers

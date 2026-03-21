@@ -143,11 +143,10 @@ Current frozen direction:
 - create a dedicated compatibility subtree per agent workspace under `memory/plugin-memory-pro/`
 - keep plugin-generated files out of the human-authored top-level `memory/YYYY-MM-DD.md` daily logs
 - require a `README.md` / `STATEMENT.md` in that subtree so later users can understand why the files exist
-- freeze the target layout as a hybrid:
-  - `daily/` for append-only audit logs
-  - `entries/agent-self/` for canonical local durable-memory projections
-  - `entries/global/` for canonical global durable-memory projections
-- allow early implementation to ship `README.md` + `daily/` first, but treat `entries/` as the intended end state
+- keep the frozen write target minimal for now:
+  - `memory/plugin-memory-pro/README.md`
+  - `memory/plugin-memory-pro/YYYY-MM-DD.md`
+- do not freeze extra derived subpaths until runtime behavior actually requires them
 
 ### Step 3
 Implement preview/reporting for reversible export/backfill.
