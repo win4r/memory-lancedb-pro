@@ -16,16 +16,17 @@ When a user enables the plugin at time **A** and disables/uninstalls it at time 
 ---
 
 ## 2. Chosen coexistence model
-## Hybrid coexistence with Markdown-compatible reversibility
+## Hybrid coexistence with Markdown + SQLite continuity
 
 ### Runtime principle
 - **LanceDB** is the preferred runtime retrieval / management layer
-- **Markdown-compatible output** is the preferred reversibility / compatibility layer
-- **SQLite** remains legacy retrieval/index infrastructure, not the preferred write target
+- **Markdown-compatible output** remains part of the compatibility/reversibility layer
+- **SQLite continuity must also be preserved** so the legacy OpenClaw memory path remains live during plugin-enabled use
 
 This means:
-- we should not try to directly mutate legacy SQLite as the main compatibility strategy
-- we should prefer durable Markdown-compatible mirror/backfill behavior for important memories
+- we cannot treat legacy SQLite as a dead read-only residue
+- we still prefer Markdown as the human-readable compatibility substrate
+- but we must also ensure durable memories continue to reach the SQLite-backed legacy system while the plugin is enabled
 
 ---
 
@@ -48,7 +49,7 @@ Every durable memory accepted into LanceDB also writes to a compatibility Markdo
 
 ## Option B — Export/backfill on demand or on disable
 ### Behavior
-Memories are written to LanceDB during runtime; compatibility Markdown is produced later by explicit export/backfill.
+Memories are written to LanceDB during runtime; compatibility layers are produced later by explicit export/backfill.
 
 ### Pros
 - cleaner runtime
@@ -57,13 +58,18 @@ Memories are written to LanceDB during runtime; compatibility Markdown is produc
 ### Cons
 - reversibility depends on a later explicit step
 - more risk that users disable the plugin before backfill/export is done
+- unacceptable if SQLite continuity is expected during active plugin use
 
 ---
 
-## Option C — Hybrid durable-memory sync (**preferred**)
+## Option C — Hybrid durable-memory sync (**preferred, revised**)
 ### Behavior
 - not every transient memory is mirrored immediately
-- memories accepted as durable/high-value are mirrored/backfilled to a Markdown-compatible layer
+- memories accepted as durable/high-value are written to LanceDB
+- the same durable/high-value memories are also propagated to legacy-compatible layers during runtime
+- that propagation must include both:
+  - Markdown-compatible continuity
+  - SQLite-backed continuity
 - lower-value/transient runtime material may remain LanceDB-only unless later promoted
 
 ### Why this is preferred
@@ -81,9 +87,9 @@ Use **Option C: Hybrid durable-memory sync**.
 
 ### Recommended policy
 1. If a memory is durable enough to materially affect future recall, it should have a compatibility path outside LanceDB.
-2. Markdown-compatible artifacts should be the main reversibility target.
-3. SQLite should not be the primary sync target.
-4. Users should be able to disable/uninstall the plugin without losing the practical ability to continue from legacy-compatible memory artifacts.
+2. Markdown-compatible artifacts should remain part of the reversibility target.
+3. SQLite continuity must also be maintained during active plugin use so the old OpenClaw memory path does not silently go stale.
+4. Users should be able to disable/uninstall the plugin without losing the practical ability to continue from legacy-compatible memory artifacts and legacy SQLite-backed retrieval.
 
 ---
 
@@ -93,13 +99,16 @@ Use **Option C: Hybrid durable-memory sync**.
 1. **No hard dependency after removal**
    - old systems must still be usable on their own
 2. **No hidden trapping of durable A→B memories**
-   - important memories created while plugin was active should be exportable/backfillable
+   - important memories created while plugin was active should already exist in legacy-compatible systems or be backfilled before exit
 3. **No silent destructive cleanup**
    - disabling/uninstalling should not erase old systems or require irreversible migration
+4. **SQLite continuity remains real**
+   - the old SQLite-backed path should not have gone stale during plugin-enabled use
 
 ## Preferred future commands
 - `memory-pro export-legacy --since <time>`
 - `memory-pro backfill-markdown --since <time>`
+- future SQLite continuity / rebuild / sync helper commands as needed
 - possibly a report command showing what would remain LanceDB-only if the plugin were disabled now
 
 ---

@@ -68,24 +68,27 @@ It best satisfies all three acceptance criteria:
 ### Why not “LanceDB only”
 Because it would trap A→B-period memories inside the plugin and violate reversibility.
 
-### Why not “direct SQLite dual-write”
-Because SQLite is a poor canonical write target here:
-- schema/semantics are more derived and implementation-shaped
-- direct mutation is more brittle
-- Markdown is the user-facing authored layer and the more stable compatibility substrate
+### Why SQLite still must remain written
+Even if SQLite is not the best human-authored source of truth, the legacy OpenClaw memory system must remain practically usable while the plugin is enabled and after it is disabled. That means Phase 2 cannot treat SQLite as read-only legacy residue.
+
+Revised requirement:
+- durable/new memories accepted during the plugin-enabled period must continue to reach the legacy SQLite-backed system as well
+- otherwise disabling the plugin would create an A→B gap where memories exist only in LanceDB
 
 ### Recommended runtime behavior
 #### During plugin-enabled runtime
 - prefer LanceDB for recall/search
 - when a new memory is accepted as durable, write it to LanceDB
-- for compatibility/reversibility, also maintain a Markdown-compatible mirror/backfill path for durable memories
+- also keep the legacy systems updated so reversibility is real, not theoretical:
+  - maintain Markdown-compatible memory continuity
+  - maintain SQLite-backed legacy memory continuity as well
 
 #### During disable/uninstall
-- ensure durable A→B-period memories can be exported/backfilled into legacy-compatible Markdown artifacts if they are not already mirrored
-- legacy SQLite can continue serving as the old retrieval/index layer via the legacy system’s own behavior
+- durable A→B-period memories must already exist in legacy-compatible systems, or be synchronously backfilled before disable/uninstall completes
+- users must not lose practical continuity simply because the plugin layer is removed
 
 ### Resulting architecture principle
-**LanceDB is the preferred management layer; Markdown is the preferred compatibility layer; SQLite remains a legacy retrieval/index layer rather than a primary write target.**
+**LanceDB is the preferred management layer, but Markdown and SQLite must both remain continuously usable compatibility layers during the plugin-enabled period so exit remains genuinely reversible.**
 
 ---
 
