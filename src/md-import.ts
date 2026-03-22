@@ -13,7 +13,7 @@
 // Types
 // ---------------------------------------------------------------------------
 
-export type SourceType = "memory-md" | "daily-md";
+export type SourceType = "memory-md" | "daily-md" | "plugin-compat-md";
 export type Durability = "durable" | "noisy";
 
 export interface MemoryCandidate {
@@ -23,8 +23,10 @@ export interface MemoryCandidate {
   headingContext: string;
   /** 1-based line number in the source content. */
   lineNumber: number;
-  /** ISO date string for daily files; null for MEMORY.md. */
+  /** ISO date string for daily/plugin-compat files; null for MEMORY.md. */
   date: string | null;
+  /** Optional scope hint parsed from structured compatibility lines. */
+  scopeHint?: string | null;
 }
 
 export interface ClassifiedCandidate extends MemoryCandidate {
@@ -51,7 +53,7 @@ export interface PreviewResult {
 
 export interface PreviewOptions {
   sourceType: SourceType;
-  /** Required when sourceType is "daily-md". */
+  /** Required when sourceType is "daily-md" or "plugin-compat-md". */
   date?: string;
   /** Override inferred scope for all candidates. */
   scope?: string;
@@ -64,6 +66,7 @@ export interface PreviewOptions {
 const FRONTMATTER_RE = /^---\s*[\r\n]([\s\S]*?)---\s*[\r\n]/;
 const BULLET_RE = /^(\s*[-*+])\s+(.+)$/;
 const HEADING_RE = /^(#{1,6})\s+(.+)$/;
+const PLUGIN_COMPAT_RE = /^\d{4}-\d{2}-\d{2}T\S+\s+\[([^:\]]+):([^\]]+)\]\s+(?:(?:agent|source)=[^\s]+\s+)*(.*)$/;
 
 /** Strip YAML frontmatter from content. */
 function stripFrontmatter(content: string): string {
@@ -156,6 +159,7 @@ export function parseMemoryMd(content: string): MemoryCandidate[] {
         headingContext: resolveHeadingContext(lines, i),
         lineNumber: i + 1,
         date: null,
+        scopeHint: null,
       });
       continue;
     }
@@ -177,6 +181,7 @@ export function parseMemoryMd(content: string): MemoryCandidate[] {
           headingContext: heading,
           lineNumber: i + 1,
           date: null,
+          scopeHint: null,
         });
       }
     }
@@ -215,6 +220,7 @@ export function parseDailyMd(content: string, date: string): MemoryCandidate[] {
         headingContext: resolveHeadingContext(lines, i),
         lineNumber: i + 1,
         date,
+        scopeHint: null,
       });
       continue;
     }
@@ -232,8 +238,64 @@ export function parseDailyMd(content: string, date: string): MemoryCandidate[] {
         headingContext: resolveHeadingContext(lines, i),
         lineNumber: i + 1,
         date,
+        scopeHint: null,
       });
     }
+  }
+
+  return candidates;
+}
+
+// ---------------------------------------------------------------------------
+// parsePluginCompatibilityMd
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse plugin-managed compatibility Markdown lines written under
+ * memory/plugins/memory-lancedb-pro/YYYY-MM-DD.md.
+ *
+ * Expected line shape:
+ * - 2026-03-22T05:00:00.000Z [preferences:agent:main] agent=main source=smart-extract:create 用户喜欢乌龙茶
+ */
+export function parsePluginCompatibilityMd(content: string, date: string): MemoryCandidate[] {
+  if (!content.trim()) return [];
+
+  const lines = content.split(/\r?\n/);
+  const candidates: MemoryCandidate[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const bulletMatch = lines[i].match(BULLET_RE);
+    if (!bulletMatch) continue;
+
+    const body = bulletMatch[2].trim();
+    if (!body) continue;
+
+    const compat = body.match(PLUGIN_COMPAT_RE);
+    if (compat) {
+      const category = compat[1].trim();
+      const scopeHint = compat[2].trim();
+      const text = compat[3].trim();
+      if (!text) continue;
+      candidates.push({
+        text,
+        sourceType: "plugin-compat-md",
+        headingContext: `plugin:${category}`,
+        lineNumber: i + 1,
+        date,
+        scopeHint,
+      });
+      continue;
+    }
+
+    // Fallback: keep any unmatched bullet as plugin-managed durable text.
+    candidates.push({
+      text: body,
+      sourceType: "plugin-compat-md",
+      headingContext: "plugin:unknown",
+      lineNumber: i + 1,
+      date,
+      scopeHint: null,
+    });
   }
 
   return candidates;
@@ -266,6 +328,10 @@ export function classifyCandidates(candidates: MemoryCandidate[]): ClassifiedCan
 }
 
 function determineDurability(c: MemoryCandidate): Durability {
+  if (c.sourceType === "plugin-compat-md") {
+    return c.text.trim().length > 0 ? "durable" : "noisy";
+  }
+
   if (isTooShort(c.text) || hasGenericContent(c.text)) return "noisy";
   if (isTransient(c.text)) return "noisy";
 
@@ -303,6 +369,7 @@ function isDurableDiscovery(text: string): boolean {
  */
 function inferScope(c: ClassifiedCandidate, overrideScope?: string): string {
   if (overrideScope) return overrideScope;
+  if (c.scopeHint) return c.scopeHint;
   return c.sourceType === "memory-md" ? "global" : "agent:main";
 }
 
@@ -329,7 +396,9 @@ export function previewMd(content: string, options: PreviewOptions): PreviewResu
   const rawCandidates =
     sourceType === "memory-md"
       ? parseMemoryMd(content)
-      : parseDailyMd(content, date ?? "");
+      : sourceType === "plugin-compat-md"
+        ? parsePluginCompatibilityMd(content, date ?? "")
+        : parseDailyMd(content, date ?? "");
 
   // 2. Classify
   const classified = classifyCandidates(rawCandidates);
@@ -349,8 +418,8 @@ export function previewMd(content: string, options: PreviewOptions): PreviewResu
   if (rawCandidates.length === 0 && content.trim().length > 0) {
     warnings.push("Content is non-empty but no parseable candidates were found.");
   }
-  if (sourceType === "daily-md" && !date) {
-    warnings.push("No date provided for daily-md source; scope inference may be inaccurate.");
+  if ((sourceType === "daily-md" || sourceType === "plugin-compat-md") && !date) {
+    warnings.push(`No date provided for ${sourceType} source; scope inference may be inaccurate.`);
   }
 
   const summary: PreviewSummary = {

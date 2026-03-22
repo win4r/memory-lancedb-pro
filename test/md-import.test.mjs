@@ -17,6 +17,7 @@ const jiti = jitiFactory(import.meta.url, { interopDefault: true });
 const {
   parseMemoryMd,
   parseDailyMd,
+  parsePluginCompatibilityMd,
   classifyCandidates,
   previewMd,
 } = jiti("../src/md-import.ts");
@@ -90,6 +91,11 @@ const DAILY_MD_NOISY = `
 - done
 - yes
 - x
+`;
+
+const PLUGIN_COMPAT_MD = `
+- 2026-03-22T05:00:00.000Z [preferences:agent:main] agent=main source=smart-extract:create 用户喜欢乌龙茶
+- 2026-03-22T05:05:00.000Z [projects:global] agent=main source=memory_store 当前主要项目是 memory-lancedb-pro 兼容层
 `;
 
 // ---------------------------------------------------------------------------
@@ -242,6 +248,32 @@ describe("parseDailyMd", () => {
 });
 
 // ---------------------------------------------------------------------------
+// parsePluginCompatibilityMd
+// ---------------------------------------------------------------------------
+
+describe("parsePluginCompatibilityMd", () => {
+  it("extracts durable text from plugin compatibility lines", () => {
+    const candidates = parsePluginCompatibilityMd(PLUGIN_COMPAT_MD, "2026-03-22");
+    assert.equal(candidates.length, 2);
+    assert.equal(candidates[0].text, "用户喜欢乌龙茶");
+    assert.equal(candidates[1].text, "当前主要项目是 memory-lancedb-pro 兼容层");
+  });
+
+  it("sets sourceType to 'plugin-compat-md' on each candidate", () => {
+    const candidates = parsePluginCompatibilityMd(PLUGIN_COMPAT_MD, "2026-03-22");
+    for (const c of candidates) {
+      assert.equal(c.sourceType, "plugin-compat-md");
+    }
+  });
+
+  it("preserves parsed scopeHint from structured compatibility lines", () => {
+    const candidates = parsePluginCompatibilityMd(PLUGIN_COMPAT_MD, "2026-03-22");
+    assert.equal(candidates[0].scopeHint, "agent:main");
+    assert.equal(candidates[1].scopeHint, "global");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // classifyCandidates
 // ---------------------------------------------------------------------------
 
@@ -309,13 +341,21 @@ describe("classifyCandidates", () => {
 
   it("daily-md items default toward noisy unless clearly durable", () => {
     const input = [
-      { text: "Discovered that chunker handles CJK text correctly", sourceType: "daily-md", headingContext: "", lineNumber: 4, date: "2026-03-20" },
-      { text: "Ran tests. All passing", sourceType: "daily-md", headingContext: "", lineNumber: 5, date: "2026-03-20" },
+      { text: "Discovered that chunker handles CJK text correctly", sourceType: "daily-md", headingContext: "", lineNumber: 4, date: "2026-03-20", scopeHint: null },
+      { text: "Ran tests. All passing", sourceType: "daily-md", headingContext: "", lineNumber: 5, date: "2026-03-20", scopeHint: null },
     ];
     const classified = classifyCandidates(input);
     // At least "Ran tests" should be noisy
     const ranTests = classified.find((c) => c.text.includes("Ran tests"));
     assert.equal(ranTests.durability, "noisy");
+  });
+
+  it("plugin-compat-md items are durable by default because they were already persisted as durable memory", () => {
+    const input = [
+      { text: "用户喜欢乌龙茶", sourceType: "plugin-compat-md", headingContext: "plugin:preferences", lineNumber: 1, date: "2026-03-22", scopeHint: "agent:main" },
+    ];
+    const classified = classifyCandidates(input);
+    assert.equal(classified[0].durability, "durable");
   });
 });
 
@@ -377,6 +417,13 @@ describe("previewMd", () => {
     assert.equal(typeof result.summary.totalFound, "number");
   });
 
+  it("supports plugin-compat-md sourceType via options", () => {
+    const result = previewMd(PLUGIN_COMPAT_MD, { sourceType: "plugin-compat-md", date: "2026-03-22" });
+
+    assert.equal(result.candidates.length, 2);
+    assert.equal(result.skipped.length, 0);
+  });
+
   it("returns empty candidates and skipped for empty content", () => {
     const result = previewMd("", { sourceType: "memory-md" });
 
@@ -433,12 +480,27 @@ describe("previewMd", () => {
     }
   });
 
+  it("plugin-compat-md candidates reuse parsed scopeHint as inferredScope", () => {
+    const result = previewMd(PLUGIN_COMPAT_MD, { sourceType: "plugin-compat-md", date: "2026-03-22" });
+    assert.equal(result.candidates[0].inferredScope, "agent:main");
+    assert.equal(result.candidates[1].inferredScope, "global");
+  });
+
   it("emits a warning when daily-md source has no date provided", () => {
     const result = previewMd(DAILY_MD_SIMPLE, { sourceType: "daily-md" });
 
     assert.ok(
       result.warnings.some((w) => w.toLowerCase().includes("date")),
       "should warn when no date is provided for daily-md"
+    );
+  });
+
+  it("emits a warning when plugin-compat-md source has no date provided", () => {
+    const result = previewMd(PLUGIN_COMPAT_MD, { sourceType: "plugin-compat-md" });
+
+    assert.ok(
+      result.warnings.some((w) => w.includes("plugin-compat-md")),
+      "should warn when no date is provided for plugin-compat-md"
     );
   });
 
