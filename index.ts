@@ -709,36 +709,45 @@ function stripLeadingInboundMetadata(text: string): string {
   }
 
   const lines = text.split("\n");
+  const outputLines: string[] = [];
   let index = 0;
-  while (index < lines.length && lines[index].trim() === "") {
+
+  while (index < lines.length) {
+    if (isAutoCaptureInboundMetaSentinelLine(lines[index])) {
+      // Found a sentinel line — try to consume it and its ```json block.
+      const sentinelStart = index;
+      index++;
+      if (index < lines.length && lines[index].trim() === "```json") {
+        index++;
+        while (index < lines.length && lines[index].trim() !== "```") {
+          index++;
+        }
+        if (index < lines.length && lines[index].trim() === "```") {
+          index++;
+        }
+        // Skip trailing blank lines after the metadata block
+        while (index < lines.length && lines[index].trim() === "") {
+          index++;
+        }
+        // Successfully consumed a sentinel + JSON block — continue scanning.
+        continue;
+      } else {
+        // Sentinel line not followed by a ```json fenced block — unexpected format.
+        // Log and keep the sentinel line to avoid lossy stripping.
+        _autoCaptureDebugLog(
+          `memory-lancedb-pro: stripLeadingInboundMetadata: sentinel line not followed by json fenced block at line ${sentinelStart}, keeping it`,
+        );
+        // Push the sentinel line we consumed and continue from current index
+        outputLines.push(lines[sentinelStart]);
+        continue;
+      }
+    }
+
+    outputLines.push(lines[index]);
     index++;
   }
 
-  while (index < lines.length && isAutoCaptureInboundMetaSentinelLine(lines[index])) {
-    index++;
-    if (index < lines.length && lines[index].trim() === "```json") {
-      index++;
-      while (index < lines.length && lines[index].trim() !== "```") {
-        index++;
-      }
-      if (index < lines.length && lines[index].trim() === "```") {
-        index++;
-      }
-    } else {
-      // Sentinel line not followed by a ```json fenced block — unexpected format.
-      // Log and return original text to avoid lossy stripping.
-      _autoCaptureDebugLog(
-        `memory-lancedb-pro: stripLeadingInboundMetadata: sentinel line not followed by json fenced block at line ${index}, returning original text`,
-      );
-      return text;
-    }
-
-    while (index < lines.length && lines[index].trim() === "") {
-      index++;
-    }
-  }
-
-  return lines.slice(index).join("\n").trim();
+  return outputLines.join("\n").trim();
 }
 
 /**
@@ -1307,8 +1316,9 @@ const CAPTURE_EXCLUDE_PATTERNS = [
 export function shouldCapture(text: string): boolean {
   let s = text.trim();
 
-  // Strip OpenClaw metadata headers (Conversation info or Sender)
-  const metadataPattern = /^(Conversation info|Sender) \(untrusted metadata\):[\s\S]*?\n\s*\n/gim;
+  // Strip OpenClaw metadata headers (all 6 sentinel labels).
+  // Some sentinels use "(untrusted metadata):" and others use "(untrusted, for context):".
+  const metadataPattern = /^(Conversation info|Sender|Thread starter|Replied message|Forwarded message context|Chat history since last reply) \(untrusted(?:,? (?:metadata|for context))\):[\s\S]*?\n\s*\n/gim;
   s = s.replace(metadataPattern, "");
 
   // CJK characters carry more meaning per character, use lower minimum threshold

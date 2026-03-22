@@ -64,7 +64,10 @@ import {
  * - "System: [YYYY-MM-DD HH:MM:SS GMT+N] Channel[account] ..." header lines
  * - "Conversation info (untrusted metadata):" + JSON code blocks
  * - "Sender (untrusted metadata):" + JSON code blocks
+ * - "Thread starter (untrusted, for context):" + JSON code blocks
  * - "Replied message (untrusted, for context):" + JSON code blocks
+ * - "Forwarded message context (untrusted metadata):" + JSON code blocks
+ * - "Chat history since last reply (untrusted, for context):" + JSON code blocks
  * - Standalone JSON blocks containing message_id/sender_id fields
  */
 export function stripEnvelopeMetadata(text: string): string {
@@ -76,8 +79,9 @@ export function stripEnvelopeMetadata(text: string): string {
 
   // 2. Strip labeled metadata sections with their JSON code blocks
   //    e.g. "Conversation info (untrusted metadata):\n```json\n{...}\n```"
+  //    All 6 sentinel labels from AUTO_CAPTURE_INBOUND_META_SENTINELS:
   cleaned = cleaned.replace(
-    /(?:Conversation info|Sender|Replied message)\s*\(untrusted[^)]*\):\s*```json\s*\{[\s\S]*?\}\s*```/g,
+    /(?:Conversation info|Sender|Thread starter|Replied message|Forwarded message context|Chat history since last reply)\s*\(untrusted[^)]*\):\s*```json\s*\{[\s\S]*?\}\s*```/g,
     "",
   );
 
