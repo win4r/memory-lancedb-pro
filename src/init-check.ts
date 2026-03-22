@@ -53,10 +53,15 @@ export interface WorkspaceMemorySource {
   /** Whether a memory/ subdirectory was found at the workspace root */
   hasMemoryDir: boolean;
   /**
-   * Basenames of YYYY-MM-DD.md files found inside memory/ (empty if
+   * Basenames of YYYY-MM-DD.md files found directly inside memory/ (empty if
    * hasMemoryDir is false or the directory contains no dated files)
    */
   memoryDirDateFiles: string[];
+  /**
+   * Basenames of YYYY-MM-DD.md files found inside the plugin compatibility
+   * subtree memory/plugins/memory-lancedb-pro/.
+   */
+  pluginCompatibilityDateFiles: string[];
   /**
    * Agent ID this workspace belongs to, when derived from openclaw.json.
    * Undefined in filesystem-fallback mode.
@@ -251,12 +256,22 @@ async function inspectWorkspace(wsPath: string): Promise<Omit<WorkspaceMemorySou
   }
 
   let memoryDirDateFiles: string[] = [];
+  let pluginCompatibilityDateFiles: string[] = [];
   if (memoryDirExists) {
     try {
       const entries = await readdir(join(wsPath, "memory"));
       memoryDirDateFiles = entries.filter((e) => DATED_FILE_RE.test(e));
     } catch {
       // directory unreadable — leave list empty
+    }
+
+    try {
+      const pluginEntries = await readdir(
+        join(wsPath, "memory", "plugins", "memory-lancedb-pro"),
+      );
+      pluginCompatibilityDateFiles = pluginEntries.filter((e) => DATED_FILE_RE.test(e));
+    } catch {
+      // subtree absent/unreadable — leave list empty
     }
   }
 
@@ -265,6 +280,7 @@ async function inspectWorkspace(wsPath: string): Promise<Omit<WorkspaceMemorySou
     hasMemoryMd: memoryMdExists,
     hasMemoryDir: memoryDirExists,
     memoryDirDateFiles,
+    pluginCompatibilityDateFiles,
   };
 }
 

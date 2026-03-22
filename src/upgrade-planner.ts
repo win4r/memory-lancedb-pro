@@ -49,7 +49,10 @@ export interface UpgradeScanReport {
 
 function workspacePriority(src: WorkspaceMemorySource): ImportPriority {
   if (src.hasMemoryMd) return "high";
-  if (src.hasMemoryDir && src.memoryDirDateFiles.length > 0) return "medium";
+  if (
+    src.hasMemoryDir &&
+    (src.memoryDirDateFiles.length > 0 || src.pluginCompatibilityDateFiles.length > 0)
+  ) return "medium";
   return "low";
 }
 
@@ -91,10 +94,14 @@ function sqliteWarnings(store: SqliteMemoryStore, hasOverlap: boolean): string[]
  * warnings, and a summary. Pure function — no filesystem I/O.
  */
 export function buildUpgradeScanReport(candidates: UpgradeCandidates): UpgradeScanReport {
-  // Build set of agentIds that have a workspace with MEMORY.md (for overlap detection).
+  // Build set of agentIds that already have legacy-compatible Markdown sources.
   const agentsWithMarkdown = new Set<string>(
     candidates.workspaceMemorySources
-      .filter((s) => s.hasMemoryMd && s.agentId !== undefined)
+      .filter(
+        (s) =>
+          s.agentId !== undefined &&
+          (s.hasMemoryMd || s.memoryDirDateFiles.length > 0 || s.pluginCompatibilityDateFiles.length > 0),
+      )
       .map((s) => s.agentId as string),
   );
 

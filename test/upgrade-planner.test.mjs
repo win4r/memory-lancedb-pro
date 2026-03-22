@@ -38,6 +38,7 @@ describe("buildUpgradeScanReport — workspace importPriority", () => {
           hasMemoryMd: true,
           hasMemoryDir: false,
           memoryDirDateFiles: [],
+          pluginCompatibilityDateFiles: [],
           agentId: "main",
         },
       ],
@@ -56,6 +57,7 @@ describe("buildUpgradeScanReport — workspace importPriority", () => {
           hasMemoryMd: false,
           hasMemoryDir: true,
           memoryDirDateFiles: ["2024-01-01.md", "2024-01-02.md"],
+          pluginCompatibilityDateFiles: [],
           agentId: "main",
         },
       ],
@@ -74,6 +76,7 @@ describe("buildUpgradeScanReport — workspace importPriority", () => {
           hasMemoryMd: false,
           hasMemoryDir: true,
           memoryDirDateFiles: [],
+          pluginCompatibilityDateFiles: [],
           agentId: "main",
         },
       ],
@@ -92,6 +95,7 @@ describe("buildUpgradeScanReport — workspace importPriority", () => {
           hasMemoryMd: true,
           hasMemoryDir: true,
           memoryDirDateFiles: ["2024-01-01.md"],
+          pluginCompatibilityDateFiles: [],
           agentId: "main",
         },
       ],
@@ -114,6 +118,7 @@ describe("buildUpgradeScanReport — workspace warnings", () => {
           hasMemoryMd: true,
           hasMemoryDir: false,
           memoryDirDateFiles: [],
+          pluginCompatibilityDateFiles: [],
           agentId: "main",
         },
       ],
@@ -132,6 +137,7 @@ describe("buildUpgradeScanReport — workspace warnings", () => {
           hasMemoryMd: true,
           hasMemoryDir: false,
           memoryDirDateFiles: [],
+          pluginCompatibilityDateFiles: [],
           // no agentId
         },
       ],
@@ -178,6 +184,7 @@ describe("buildUpgradeScanReport — sqlite importPriority", () => {
           hasMemoryMd: true,
           hasMemoryDir: false,
           memoryDirDateFiles: [],
+          pluginCompatibilityDateFiles: [],
           agentId: "main",
         },
       ],
@@ -196,7 +203,7 @@ describe("buildUpgradeScanReport — sqlite importPriority", () => {
     assert.equal(sq.overlapWithWorkspaceMarkdown, true);
   });
 
-  it("does NOT flag overlap when workspace lacks MEMORY.md (only memory dir)", () => {
+  it("flags overlap when workspace already has dated memory Markdown for the same agent", () => {
     const candidates = {
       discoveryMode: "config",
       workspaceMemorySources: [
@@ -205,6 +212,7 @@ describe("buildUpgradeScanReport — sqlite importPriority", () => {
           hasMemoryMd: false,
           hasMemoryDir: true,
           memoryDirDateFiles: ["2024-01-01.md"],
+          pluginCompatibilityDateFiles: [],
           agentId: "agent2",
         },
       ],
@@ -219,8 +227,36 @@ describe("buildUpgradeScanReport — sqlite importPriority", () => {
     };
     const report = buildUpgradeScanReport(candidates);
     const sq = report.sqliteStores[0];
-    assert.equal(sq.overlapWithWorkspaceMarkdown, false);
-    assert.equal(sq.importPriority, "medium");
+    assert.equal(sq.overlapWithWorkspaceMarkdown, true);
+    assert.equal(sq.importPriority, "low");
+  });
+
+  it("flags overlap when workspace only has plugin compatibility Markdown for the same agent", () => {
+    const candidates = {
+      discoveryMode: "config",
+      workspaceMemorySources: [
+        {
+          workspacePath: "/ws/plugin-agent",
+          hasMemoryMd: false,
+          hasMemoryDir: true,
+          memoryDirDateFiles: [],
+          pluginCompatibilityDateFiles: ["2026-03-22.md"],
+          agentId: "plugin-agent",
+        },
+      ],
+      sqliteStores: [
+        {
+          filePath: "/mem/plugin-agent.sqlite",
+          basename: "plugin-agent.sqlite",
+          agentName: "plugin-agent",
+          agentId: "plugin-agent",
+        },
+      ],
+    };
+    const report = buildUpgradeScanReport(candidates);
+    const sq = report.sqliteStores[0];
+    assert.equal(sq.overlapWithWorkspaceMarkdown, true);
+    assert.equal(sq.importPriority, "low");
   });
 });
 
@@ -236,6 +272,7 @@ describe("buildUpgradeScanReport — sqlite warnings", () => {
           hasMemoryMd: true,
           hasMemoryDir: false,
           memoryDirDateFiles: [],
+          pluginCompatibilityDateFiles: [],
           agentId: "main",
         },
       ],
@@ -308,6 +345,7 @@ describe("buildUpgradeScanReport — summary", () => {
           hasMemoryMd: true,
           hasMemoryDir: false,
           memoryDirDateFiles: [],
+          pluginCompatibilityDateFiles: [],
           agentId: "a",
         },
         // unresolved → ambiguous
@@ -316,6 +354,7 @@ describe("buildUpgradeScanReport — summary", () => {
           hasMemoryMd: true,
           hasMemoryDir: false,
           memoryDirDateFiles: [],
+          pluginCompatibilityDateFiles: [],
         },
       ],
       sqliteStores: [

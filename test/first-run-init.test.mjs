@@ -119,6 +119,7 @@ describe("first-run init-check", () => {
     assert.equal(src.workspacePath, wsDir);
     assert.equal(src.hasMemoryMd, true);
     assert.equal(src.hasMemoryDir, false);
+    assert.deepEqual(src.pluginCompatibilityDateFiles, []);
   });
 
   it("detects workspace with memory/ directory as a memory source", async () => {
@@ -154,6 +155,7 @@ describe("first-run init-check", () => {
     assert.equal(src.hasMemoryDir, true);
     const files = src.memoryDirDateFiles.slice().sort();
     assert.deepEqual(files, ["2025-01-01.md", "2025-03-15.md"]);
+    assert.deepEqual(src.pluginCompatibilityDateFiles, []);
   });
 
   it("excludes workspace directory that has neither MEMORY.md nor memory/", async () => {
@@ -167,6 +169,25 @@ describe("first-run init-check", () => {
     });
 
     assert.equal(candidates.workspaceMemorySources.length, 0);
+  });
+
+  it("detects plugin compatibility daily files under memory/plugins/memory-lancedb-pro", async () => {
+    const wsDir = path.join(workDir, "ws-plugin-compat");
+    const pluginDir = path.join(wsDir, "memory", "plugins", "memory-lancedb-pro");
+    mkdirSync(pluginDir, { recursive: true });
+    await writeFile(path.join(pluginDir, "2026-03-22.md"), "- plugin memory\n", "utf8");
+    await writeFile(path.join(pluginDir, "README.md"), "plugin readme\n", "utf8");
+
+    const candidates = await detectUpgradeCandidates({
+      overrideWorkspaceRoots: [wsDir],
+      overrideSqliteDir: path.join(workDir, "no-sqlite-dir"),
+    });
+
+    assert.equal(candidates.workspaceMemorySources.length, 1);
+    const src = candidates.workspaceMemorySources[0];
+    assert.equal(src.hasMemoryDir, true);
+    assert.deepEqual(src.memoryDirDateFiles, []);
+    assert.deepEqual(src.pluginCompatibilityDateFiles, ["2026-03-22.md"]);
   });
 
   it("scans multiple workspace roots and returns a source per matching root", async () => {
