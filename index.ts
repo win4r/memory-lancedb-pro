@@ -90,6 +90,12 @@ interface PluginConfig {
   autoRecallMaxChars?: number;
   autoRecallPerItemMaxChars?: number;
   captureAssistant?: boolean;
+  /** Default depth for auto-recall injection.
+   *  - "full": inject complete text (default, backward compatible)
+   *  - "l1": inject L1 overview from metadata (up to ~500 tokens)
+   *  - "l0": inject L0 abstract from metadata (one line, ~100 tokens)
+   *  Agent can use memory_drill_down tool to get deeper content on demand. */
+  recallDepthDefault?: "l0" | "l1" | "full";
   retrieval?: {
     mode?: "hybrid" | "vector";
     vectorWeight?: number;
@@ -3620,6 +3626,8 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     autoRecallMaxChars: parsePositiveInt(cfg.autoRecallMaxChars) ?? 600,
     autoRecallPerItemMaxChars: parsePositiveInt(cfg.autoRecallPerItemMaxChars) ?? 180,
     captureAssistant: cfg.captureAssistant === true,
+    recallDepthDefault: (["l0", "l1", "full"].includes(cfg.recallDepthDefault) ? cfg.recallDepthDefault : undefined) as
+      | "l0" | "l1" | "full" | undefined,
     retrieval: typeof cfg.retrieval === "object" && cfg.retrieval !== null ? cfg.retrieval as any : undefined,
     decay: typeof cfg.decay === "object" && cfg.decay !== null ? cfg.decay as any : undefined,
     tier: typeof cfg.tier === "object" && cfg.tier !== null ? cfg.tier as any : undefined,

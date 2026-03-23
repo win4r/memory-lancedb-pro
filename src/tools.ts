@@ -1904,6 +1904,105 @@ export function registerMemoryExplainRankTool(
 // Tool Registration Helper
 // ============================================================================
 
+/**
+ * memory_drill_down: Get deeper content for a memory.
+ * Use after seeing L0 summaries in auto-recall to get L1 overview or L2 full content.
+ */
+export function registerMemoryDrillDownTool(
+  api: OpenClawPluginApi,
+  context: ToolContext,
+) {
+  api.registerTool(
+    (toolCtx) => {
+      const runtimeContext = resolveToolContext(context, toolCtx);
+      return {
+        name: "memory_drill_down",
+        label: "Memory Drill Down",
+        description:
+          "Get deeper content for a memory entry. Use after seeing compact summaries to get the full text or structured overview.",
+        parameters: Type.Object({
+          id: Type.String({
+            description: "Memory ID or prefix (at least 8 hex chars)",
+          }),
+          level: Type.Optional(
+            Type.Union([Type.Literal("overview"), Type.Literal("full")], {
+              description: "Content depth: 'overview' (L1) or 'full' (L2, default)",
+              default: "full",
+            }),
+          ),
+        }),
+        async execute(_toolCallId, params) {
+          const { id, level = "full" } = params as {
+            id: string;
+            level?: "overview" | "full";
+          };
+
+          try {
+            const entry = await runtimeContext.store.getById(id);
+            if (!entry) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `No memory found with ID: ${id}`,
+                  },
+                ],
+              };
+            }
+
+            // Parse metadata to extract L0/L1/L2
+            let meta: Record<string, unknown> = {};
+            if (entry.metadata) {
+              try {
+                meta = JSON.parse(entry.metadata);
+              } catch { /* malformed metadata, use raw text */ }
+            }
+
+            const l0 = typeof meta.l0_abstract === "string" ? meta.l0_abstract : null;
+            const l1 = typeof meta.l1_overview === "string" ? meta.l1_overview : null;
+            const l2 = entry.text; // full text is always the L2 content
+
+            let content: string;
+            if (level === "overview" && l1) {
+              content = `## ${entry.category} (L1 Overview)\n\n${l1}`;
+            } else {
+              content = `## ${entry.category} (Full Content)\n\n${l2}`;
+            }
+
+            const header = [
+              `**ID**: ${entry.id}`,
+              `**Category**: ${entry.category}`,
+              `**Scope**: ${entry.scope}`,
+              `**Importance**: ${entry.importance}`,
+              `**Created**: ${new Date(entry.timestamp).toISOString()}`,
+              l0 ? `**Abstract**: ${l0}` : null,
+            ].filter(Boolean).join("\n");
+
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `${header}\n\n${content}`,
+                },
+              ],
+            };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Error drilling down: ${String(err)}`,
+                },
+              ],
+            };
+          }
+        },
+      };
+    },
+    { name: "memory_drill_down" },
+  );
+}
+
 export function registerAllMemoryTools(
   api: OpenClawPluginApi,
   context: ToolContext,
@@ -1917,6 +2016,7 @@ export function registerAllMemoryTools(
   registerMemoryStoreTool(api, context);
   registerMemoryForgetTool(api, context);
   registerMemoryUpdateTool(api, context);
+  registerMemoryDrillDownTool(api, context);
 
   // Management tools (optional)
   if (options.enableManagementTools) {
