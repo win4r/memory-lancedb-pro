@@ -167,11 +167,15 @@ Return JSON format:
   "decision": "skip|create|merge|supersede|support|contextualize|contradict",
   "match_index": 1,
   "reason": "Decision reason",
-  "context_label": "evening"
+  "context_label": "evening",
+  "actions": [
+    { "match_index": 2, "action": "delete", "reason": "outdated by candidate" }
+  ]
 }
 
 - If decision is "merge"/"supersede"/"support"/"contextualize"/"contradict", set "match_index" to the number of the existing memory (1-based).
-- Only include "context_label" for support/contextualize/contradict decisions.`;
+- Only include "context_label" for support/contextualize/contradict decisions.
+- "actions" is optional. Use it ONLY when multiple existing memories need cleanup (e.g., merge with memory 1, delete outdated memory 2). Each action targets a different existing memory. Valid actions: "merge", "delete".`;
 }
 
 export function buildMergePrompt(

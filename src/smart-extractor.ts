@@ -592,6 +592,50 @@ export class SmartExtractor {
         }
         break;
     }
+
+    // Execute secondary actions (e.g., delete outdated memories found during dedup)
+    if (dedupResult.actions && dedupResult.actions.length > 0) {
+      await this.executeSecondaryActions(dedupResult.actions, scopeFilter, stats);
+    }
+  }
+
+  /**
+   * Execute secondary dedup actions on existing memories.
+   * Order: delete first, then merge (avoid merging into a to-be-deleted memory).
+   */
+  private async executeSecondaryActions(
+    actions: Array<{ matchIndex: number; action: "merge" | "delete"; reason: string }>,
+    scopeFilter: string[] | undefined,
+    stats: ExtractionStats,
+  ): Promise<void> {
+    // Sort: deletes first, then merges
+    const sorted = [...actions].sort((a, b) =>
+      a.action === "delete" && b.action !== "delete" ? -1 : 1,
+    );
+
+    for (const act of sorted) {
+      try {
+        // Resolve the memory by doing a scoped search (actions use 1-based index from the dedup prompt)
+        // We need to re-query to get the actual memory ID
+        const results = await this.store.list(scopeFilter, undefined, act.matchIndex + 5, 0);
+        const target = results[act.matchIndex - 1];
+        if (!target) {
+          this.log(`memory-pro: smart-extractor: action target index ${act.matchIndex} out of range, skipping`);
+          continue;
+        }
+
+        if (act.action === "delete") {
+          await this.store.delete(target.id);
+          this.log(`memory-pro: smart-extractor: secondary delete of ${target.id.slice(0, 8)}: ${act.reason}`);
+        }
+        // Note: secondary merge would require a candidate — skipping for now as delete is the primary use case
+
+        stats.actionsExecuted = (stats.actionsExecuted ?? 0) + 1;
+      } catch (err) {
+        this.log(`memory-pro: smart-extractor: secondary action failed (${act.action} idx=${act.matchIndex}): ${String(err)}`);
+        // Continue with remaining actions
+      }
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -713,11 +757,30 @@ export class SmartExtractor {
         };
       }
 
+      // Parse optional secondary actions on other existing memories
+      const rawActions = Array.isArray((data as any).actions) ? (data as any).actions : [];
+      const validActions: Array<{ matchIndex: number; action: "merge" | "delete"; reason: string }> = [];
+      for (const a of rawActions) {
+        if (
+          typeof a === "object" && a !== null &&
+          typeof a.match_index === "number" && a.match_index >= 1 && a.match_index <= topSimilar.length &&
+          (a.action === "merge" || a.action === "delete") &&
+          a.match_index !== idx // Don't duplicate the primary action
+        ) {
+          validActions.push({
+            matchIndex: a.match_index,
+            action: a.action,
+            reason: typeof a.reason === "string" ? a.reason : "",
+          });
+        }
+      }
+
       return {
         decision,
         reason: data.reason ?? "",
         matchId: ["merge", "support", "contextualize", "contradict", "supersede"].includes(decision) ? matchEntry?.entry.id : undefined,
         contextLabel: typeof (data as any).context_label === "string" ? (data as any).context_label : undefined,
+        actions: validActions.length > 0 ? validActions : undefined,
       };
     } catch (err) {
       this.log(

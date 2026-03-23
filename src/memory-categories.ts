@@ -59,11 +59,19 @@ export type DedupDecision =
   | "contradict"
   | "supersede";
 
+/** Secondary action on an existing memory during dedup. */
+export type DedupAction = {
+  matchIndex: number;
+  action: "merge" | "delete";
+  reason: string;
+};
+
 export type DedupResult = {
   decision: DedupDecision;
   reason: string;
   matchId?: string; // ID of existing memory to merge with
   contextLabel?: string; // Optional context label for support/contextualize/contradict
+  actions?: DedupAction[]; // Optional secondary actions on other existing memories
 };
 
 export type ExtractionStats = {
@@ -74,6 +82,7 @@ export type ExtractionStats = {
   boundarySkipped?: number;
   supported?: number; // context-aware support count
   superseded?: number; // temporal fact replacements
+  actionsExecuted?: number; // secondary dedup actions executed
 };
 
 /** Validate and normalize a category string. */
