@@ -59,11 +59,13 @@ export type DedupDecision =
   | "contradict"
   | "supersede";
 
-/** Secondary action on an existing memory during dedup. */
+/** Secondary action on an existing memory during dedup.
+ *  Only "delete" is supported — "merge" requires a candidate. */
 export type DedupAction = {
   matchIndex: number;
-  action: "merge" | "delete";
+  action: "delete";
   reason: string;
+  resolvedId?: string;
 };
 
 export type DedupResult = {

@@ -601,39 +601,27 @@ export class SmartExtractor {
 
   /**
    * Execute secondary dedup actions on existing memories.
-   * Order: delete first, then merge (avoid merging into a to-be-deleted memory).
+   * Only "delete" is supported — IDs are pre-resolved during dedup (not re-queried)
+   * to prevent index drift after the primary action mutates the store.
    */
   private async executeSecondaryActions(
-    actions: Array<{ matchIndex: number; action: "merge" | "delete"; reason: string }>,
-    scopeFilter: string[] | undefined,
+    actions: Array<{ matchIndex: number; action: "delete"; reason: string; resolvedId?: string }>,
+    _scopeFilter: string[] | undefined,
     stats: ExtractionStats,
   ): Promise<void> {
-    // Sort: deletes first, then merges
-    const sorted = [...actions].sort((a, b) =>
-      a.action === "delete" && b.action !== "delete" ? -1 : 1,
-    );
+    for (const act of actions) {
+      const targetId = (act as any).resolvedId;
+      if (!targetId || typeof targetId !== "string") {
+        this.log(`memory-pro: smart-extractor: secondary action missing resolvedId for index ${act.matchIndex}, skipping`);
+        continue;
+      }
 
-    for (const act of sorted) {
       try {
-        // Resolve the memory by doing a scoped search (actions use 1-based index from the dedup prompt)
-        // We need to re-query to get the actual memory ID
-        const results = await this.store.list(scopeFilter, undefined, act.matchIndex + 5, 0);
-        const target = results[act.matchIndex - 1];
-        if (!target) {
-          this.log(`memory-pro: smart-extractor: action target index ${act.matchIndex} out of range, skipping`);
-          continue;
-        }
-
-        if (act.action === "delete") {
-          await this.store.delete(target.id);
-          this.log(`memory-pro: smart-extractor: secondary delete of ${target.id.slice(0, 8)}: ${act.reason}`);
-        }
-        // Note: secondary merge would require a candidate — skipping for now as delete is the primary use case
-
+        await this.store.delete(targetId);
+        this.log(`memory-pro: smart-extractor: secondary delete of ${targetId.slice(0, 8)}: ${act.reason}`);
         stats.actionsExecuted = (stats.actionsExecuted ?? 0) + 1;
       } catch (err) {
-        this.log(`memory-pro: smart-extractor: secondary action failed (${act.action} idx=${act.matchIndex}): ${String(err)}`);
-        // Continue with remaining actions
+        this.log(`memory-pro: smart-extractor: secondary delete failed (id=${targetId.slice(0, 8)}): ${String(err)}`);
       }
     }
   }
@@ -757,21 +745,29 @@ export class SmartExtractor {
         };
       }
 
-      // Parse optional secondary actions on other existing memories
+      // Parse optional secondary actions on other existing memories.
+      // Resolve match_index to actual memory IDs NOW (not later) to prevent
+      // index drift after the primary action mutates the store.
+      // Only "delete" is supported as a secondary action — "merge" requires
+      // a candidate which is not available in the secondary context.
       const rawActions = Array.isArray((data as any).actions) ? (data as any).actions : [];
-      const validActions: Array<{ matchIndex: number; action: "merge" | "delete"; reason: string }> = [];
+      const validActions: Array<{ matchIndex: number; action: "delete"; reason: string; resolvedId: string }> = [];
       for (const a of rawActions) {
         if (
           typeof a === "object" && a !== null &&
           typeof a.match_index === "number" && a.match_index >= 1 && a.match_index <= topSimilar.length &&
-          (a.action === "merge" || a.action === "delete") &&
+          a.action === "delete" && // Only delete is safe as secondary action
           a.match_index !== idx // Don't duplicate the primary action
         ) {
-          validActions.push({
-            matchIndex: a.match_index,
-            action: a.action,
-            reason: typeof a.reason === "string" ? a.reason : "",
-          });
+          const targetEntry = topSimilar[a.match_index - 1];
+          if (targetEntry) {
+            validActions.push({
+              matchIndex: a.match_index,
+              action: "delete",
+              reason: typeof a.reason === "string" ? a.reason : "",
+              resolvedId: targetEntry.entry.id,
+            });
+          }
         }
       }
 

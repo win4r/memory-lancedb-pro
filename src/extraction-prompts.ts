@@ -175,7 +175,7 @@ Return JSON format:
 
 - If decision is "merge"/"supersede"/"support"/"contextualize"/"contradict", set "match_index" to the number of the existing memory (1-based).
 - Only include "context_label" for support/contextualize/contradict decisions.
-- "actions" is optional. Use it ONLY when multiple existing memories need cleanup (e.g., merge with memory 1, delete outdated memory 2). Each action targets a different existing memory. Valid actions: "merge", "delete".`;
+- "actions" is optional. Use it ONLY when an existing memory is outdated or fully superseded by the candidate. Each action targets a different existing memory. Only valid action: "delete".`;
 }
 
 export function buildMergePrompt(
