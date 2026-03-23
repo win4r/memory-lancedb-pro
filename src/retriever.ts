@@ -528,10 +528,11 @@ export class MemoryRetriever {
     const lifecycleRanked = this.decayEngine
       ? this.applyDecayBoost(hardFiltered)
       : this.applyTimeDecay(hardFiltered);
+    const hotnessBlended = this.applyHotnessBlend(lifecycleRanked);
 
     const denoised = this.config.filterNoise
-      ? filterNoise(lifecycleRanked, r => r.entry.text)
-      : lifecycleRanked;
+      ? filterNoise(hotnessBlended, r => r.entry.text)
+      : hotnessBlended;
 
     const deduplicated = this.applyMMRDiversity(denoised);
     return deduplicated.slice(0, limit);
@@ -596,11 +597,12 @@ export class MemoryRetriever {
     const lifecycleRanked = this.decayEngine
       ? this.applyDecayBoost(hardFiltered)
       : this.applyTimeDecay(hardFiltered);
+    const hotnessBlended = this.applyHotnessBlend(lifecycleRanked);
 
     // Filter noise
     const denoised = this.config.filterNoise
-      ? filterNoise(lifecycleRanked, r => r.entry.text)
-      : lifecycleRanked;
+      ? filterNoise(hotnessBlended, r => r.entry.text)
+      : hotnessBlended;
 
     // MMR deduplication: avoid top-k filled with near-identical memories
     const deduplicated = this.applyMMRDiversity(denoised);
@@ -1027,8 +1029,9 @@ export class MemoryRetriever {
    * No-op when hotnessWeight is 0 or AccessTracker is absent.
    */
   private applyHotnessBlend(results: RetrievalResult[]): RetrievalResult[] {
-    const alpha = this.config.hotnessWeight;
-    if (!alpha || alpha <= 0 || !this.accessTracker) return results;
+    const raw = this.config.hotnessWeight;
+    const alpha = Math.min(1, Math.max(0, Number.isFinite(raw) ? raw : 0));
+    if (alpha <= 0 || !this.accessTracker) return results;
 
     const blended = results.map((r) => {
       const { accessCount, lastAccessedAt } = parseAccessMetadata(r.entry.metadata);
