@@ -8,7 +8,7 @@
  * Storage: {dbPath}/_redo/{taskId}.json
  */
 
-import { writeFile, unlink, readdir, readFile, mkdir } from "node:fs/promises";
+import { writeFile, unlink, readdir, readFile, mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -62,12 +62,35 @@ export async function deleteRedoMarker(
   taskId: string,
 ): Promise<void> {
   const redoDir = join(dbPath, "_redo");
-  const filePath = join(redoDir, `${taskId}.json`);
+  // Try both .json and .claimed extensions
+  for (const ext of [".json", ".claimed"]) {
+    const filePath = join(redoDir, `${taskId}${ext}`);
+    try {
+      await unlink(filePath);
+    } catch (err: any) {
+      if (err?.code !== "ENOENT") throw err;
+    }
+  }
+}
+
+/**
+ * Claim a redo marker for recovery by renaming it.
+ * Returns true if this process won the claim, false if another process already claimed it.
+ * Prevents concurrent replay of the same marker by multiple processes.
+ */
+export async function claimRedoMarker(
+  dbPath: string,
+  taskId: string,
+): Promise<boolean> {
+  const redoDir = join(dbPath, "_redo");
+  const srcPath = join(redoDir, `${taskId}.json`);
+  const claimedPath = join(redoDir, `${taskId}.claimed`);
   try {
-    await unlink(filePath);
-  } catch (err: any) {
-    // Silently ignore if file already deleted (e.g. concurrent cleanup)
-    if (err?.code !== "ENOENT") throw err;
+    await rename(srcPath, claimedPath);
+    return true;
+  } catch {
+    // rename failed — file already claimed or deleted by another process
+    return false;
   }
 }
 

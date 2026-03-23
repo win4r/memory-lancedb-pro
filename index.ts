@@ -67,6 +67,7 @@ import {
 import {
   writeRedoMarker,
   deleteRedoMarker,
+  claimRedoMarker,
   scanRedoMarkers,
   createRedoMarker,
   isStale,
@@ -1844,6 +1845,14 @@ const memoryLanceDBProPlugin = {
               await deleteRedoMarker(resolvedDbPath, marker.taskId);
               continue;
             }
+            // Claim marker before replay to prevent concurrent processes from replaying the same marker
+            const claimed = await claimRedoMarker(resolvedDbPath, marker.taskId);
+            if (!claimed) {
+              api.logger.info(
+                `memory-lancedb-pro: crash recovery marker taskId=${marker.taskId} already claimed by another process, skipping`,
+              );
+              continue;
+            }
             api.logger.info(
               `memory-lancedb-pro: crash recovery re-running extraction for taskId=${marker.taskId} sessionKey=${marker.sessionKey}`,
             );
@@ -2178,10 +2187,13 @@ const memoryLanceDBProPlugin = {
     // Register Tools
     // ========================================================================
 
+    // Use hierarchical retriever if configured, otherwise flat
+    const activeRetriever = hierarchicalRetriever ?? retriever;
+
     registerAllMemoryTools(
       api,
       {
-        retriever,
+        retriever: activeRetriever,
         store,
         scopeManager,
         embedder,

@@ -243,13 +243,17 @@ export class SmartExtractor {
         continue;
       }
 
-      // Feature 5: Route cases/patterns to agent-specific scope
+      // Feature 5: Route cases/patterns to agent-specific scope.
+      // Also override scopeFilter for dedup so it searches the same scope
+      // where the memory will be stored — prevents cross-scope merge.
       let effectiveScope = targetScope;
+      let effectiveScopeFilter = scopeFilter;
       if (
         agentId &&
         (candidate.category === "cases" || candidate.category === "patterns")
       ) {
         effectiveScope = `agent:${agentId}`;
+        effectiveScopeFilter = [`agent:${agentId}`];
         this.debugLog(
           `memory-pro: smart-extractor: routing [${candidate.category}] to agent scope agent:${agentId}`,
         );
@@ -262,7 +266,7 @@ export class SmartExtractor {
           sessionKey,
           stats,
           effectiveScope,
-          scopeFilter,
+          effectiveScopeFilter,
         );
       } catch (err) {
         this.log(

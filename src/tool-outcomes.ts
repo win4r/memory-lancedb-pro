@@ -73,22 +73,24 @@ function detectToolOutcomes(text: string): ToolOutcome[] {
     });
   }
 
-  // Pattern 2: "tool_call" JSON blocks
-  const toolCallPattern = /tool_call[^{]*\{[^}]*"name"\s*:\s*"([^"]+)"[^}]*\}/gi;
-  while ((match = toolCallPattern.exec(text)) !== null) {
+  // Pattern 2: "tool_call" JSON blocks — extract name from "name" field.
+  // Use a name-only regex instead of trying to parse nested JSON braces.
+  const toolCallNamePattern = /tool_call[^"]*"name"\s*:\s*"([^"]+)"/gi;
+  while ((match = toolCallNamePattern.exec(text)) !== null) {
     const name = match[1];
     if (seen.has(name)) continue;
     seen.add(name);
 
-    // Look for nearby result/error
+    // Look for result/error in the next 200 chars after the match
     const afterBlock = text.slice(match.index + match[0].length, match.index + match[0].length + 200);
     const hasError = FAILURE_PATTERNS.some(p => p.test(afterBlock));
+    const resultLine = afterBlock.split("\n").find(l => l.trim().length > 0)?.trim() || "";
 
     outcomes.push({
       name,
       input: "",
       success: !hasError,
-      result: truncate(afterBlock.split("\n")[0]?.trim() || "", 100),
+      result: truncate(resultLine, 100),
     });
   }
 

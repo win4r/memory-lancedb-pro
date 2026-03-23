@@ -133,15 +133,24 @@ export class TopicIndex {
       return;
     }
 
-    // Compute centroids for each topic
+    // Compute centroids for each topic.
+    // NOTE: store.list() returns vector: [] for performance. If we have no vectors,
+    // we can still use topic membership for ID filtering, just not centroid similarity.
+    let hasVectors = false;
     for (const [topic, entries] of this.clusters) {
       const vectors = entries.map(e => e.vector).filter(v => v && v.length > 0);
       if (vectors.length > 0) {
         this.centroids.set(topic, computeCentroid(vectors));
+        hasVectors = true;
       }
     }
 
     this._built = true;
+    if (!hasVectors) {
+      // Graceful degradation: topic index is built for ID filtering
+      // but findRelevant() cannot rank by centroid similarity.
+      // Callers should fall back to flat retrieval when centroids are empty.
+    }
   }
 
   /**
