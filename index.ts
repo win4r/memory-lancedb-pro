@@ -48,6 +48,7 @@ import {
   keepMostRecentPerNormalizedKey,
 } from "./src/recall-engine.js";
 import { shouldSkipRetrieval } from "./src/adaptive-retrieval.js";
+import { analyzeIntent, applyCategoryBoost, formatAtDepth } from "./src/intent-analyzer.js";
 import { rankDynamicReflectionRecallFromEntries } from "./src/reflection-recall.js";
 
 // ============================================================================
@@ -69,7 +70,17 @@ interface PluginConfig {
   dbPath?: string;
   autoCapture?: boolean;
   autoRecall?: boolean;
-  recallMode?: "full" | "summary" | "off";
+  /**
+   * Control recall intensity injected into agent context.
+   * - "full": inject all matching memories (existing autoRecall behavior)
+   * - "summary": inject only a one-line count hint, no memory content
+   * - "adaptive": auto-detect query intent and adjust category filtering + injection depth
+   * - "off": disable auto-recall entirely
+   *
+   * When set, this takes precedence over the boolean `autoRecall` field.
+   * If neither is set, auto-recall is off by default.
+   */
+  recallMode?: "full" | "summary" | "adaptive" | "off";
   autoRecallMinLength?: number;
   autoRecallMinRepeated?: number;
   autoRecallTopK?: number;
@@ -1422,6 +1433,104 @@ function getPluginVersion(): string {
 const pluginVersion = getPluginVersion();
 
 // ============================================================================
+// Adaptive Recall Handler
+// ============================================================================
+
+/**
+ * Adaptive auto-recall: analyze query intent to determine category routing
+ * and injection depth. Inspired by OpenViking's hierarchical retrieval
+ * intent analysis, adapted for memory-lancedb-pro's category model.
+ *
+ * Intent detection is pure pattern matching (no LLM call) for minimal latency.
+ * When a high-confidence intent is detected, results are filtered by primary
+ * category and formatted at the appropriate depth level:
+ *   - l0: ultra-compact one-line summaries (preference queries)
+ *   - l1: medium detail up to 300 chars (fact/entity/decision queries)
+ *   - full: complete text (event/timeline queries)
+ *
+ * Falls back to unfiltered full-depth retrieval when intent is unclear.
+ */
+async function handleAdaptiveRecall(
+  event: { prompt?: string },
+  agentId: string,
+  accessibleScopes: string[],
+  topK: number,
+  fetchLimit: number,
+  retriever: { retrieve: (ctx: any) => Promise<any[]> },
+  config: { autoRecallMinLength?: number },
+  api: { logger: any },
+  postProcessAutoRecallResults: (results: any[]) => any[],
+): Promise<{ prependContext: string } | undefined> {
+  if (!event.prompt || shouldSkipRetrieval(event.prompt, config.autoRecallMinLength)) return;
+
+  const intent = analyzeIntent(event.prompt);
+  api.logger.info?.(
+    `memory-lancedb-pro: adaptive-recall intent=${intent.label} confidence=${intent.confidence} depth=${intent.depth} categories=[${intent.categories.join(",")}]`,
+  );
+
+  // Use primary category as retrieval filter when confidence is high
+  const intentCategory = intent.confidence === "high" && intent.categories.length > 0
+    ? intent.categories[0]
+    : undefined;
+
+  const retrieved = await retriever.retrieve({
+    query: event.prompt,
+    limit: fetchLimit,
+    scopeFilter: accessibleScopes,
+    category: intentCategory,
+    source: "auto-recall",
+  });
+
+  // Apply intent-based category boost to re-rank results
+  const boosted = applyCategoryBoost(retrieved, intent);
+  let processed = postProcessAutoRecallResults(boosted).slice(0, topK);
+
+  // Fallback: if category filter yielded nothing, retry without filter
+  let isFallback = false;
+  if (processed.length === 0 && intentCategory) {
+    api.logger.debug?.(
+      `memory-lancedb-pro: adaptive-recall category=${intentCategory} yielded 0 results, retrying without filter`,
+    );
+    const fallback = await retriever.retrieve({
+      query: event.prompt,
+      limit: fetchLimit,
+      scopeFilter: accessibleScopes,
+      source: "auto-recall",
+    });
+    processed = postProcessAutoRecallResults(
+      applyCategoryBoost(fallback, intent),
+    ).slice(0, topK);
+    isFallback = true;
+  }
+
+  if (processed.length === 0) return;
+
+  // Determine depth: use intent depth normally, full depth on fallback
+  const depth = isFallback ? "full" : intent.depth;
+
+  const lines = processed.map((row: any, i: number) =>
+    formatAtDepth(row.entry, depth, row.score, i, {
+      bm25Hit: !!row.sources?.bm25,
+      reranked: !!row.sources?.reranked,
+    }),
+  );
+
+  const depthHint = depth === "l0"
+    ? "Compact summaries shown. Use memory_recall for full details.\n"
+    : depth === "l1"
+      ? "Medium detail shown. Use memory_recall(id) for full content.\n"
+      : "";
+
+  return {
+    prependContext:
+      `<relevant-memories intent="${intent.label}" depth="${depth}"${isFallback ? ' fallback="true"' : ""}>\n` +
+      depthHint +
+      lines.join("\n") + "\n" +
+      `</relevant-memories>`,
+  };
+}
+
+// ============================================================================
 // Plugin Definition
 // ============================================================================
 
@@ -1663,8 +1772,9 @@ const memoryLanceDBProPlugin = {
 
     // Auto-Recall: inject relevant memories before agent starts.
     // Default is OFF to prevent the model from accidentally echoing injected context.
-    // recallMode takes precedence: "full" = inject memories, "summary" = count hint only, "off" = skip.
-    const resolvedRecallMode: "full" | "summary" | "off" = config.recallMode
+    // recallMode takes precedence: "full" = inject memories, "summary" = count hint only,
+    // "adaptive" = intent-based category routing + tiered depth injection, "off" = skip.
+    const resolvedRecallMode: "full" | "summary" | "adaptive" | "off" = config.recallMode
       ? config.recallMode
       : (config.autoRecall ? "full" : "off");
     if (resolvedRecallMode !== "off") {
@@ -1697,6 +1807,17 @@ const memoryLanceDBProPlugin = {
                 `${count} relevant memories found. Use memory_recall to retrieve details on demand.\n` +
                 `</memory-hint>`,
             };
+          }
+
+          // Adaptive mode: analyze query intent, route categories, tiered depth injection.
+          // Inspired by OpenViking hierarchical retrieval intent routing, adapted for
+          // memory-lancedb-pro flat category + scope model.
+          if (resolvedRecallMode === "adaptive") {
+            return await handleAdaptiveRecall(
+              event, agentId, accessibleScopes, topK, fetchLimit,
+              retriever, config, api,
+              postProcessAutoRecallResults,
+            );
           }
 
           // Full mode: inject matching memories into agent context.
@@ -2810,8 +2931,8 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     autoRecall: cfg.recallMode
       ? cfg.recallMode !== "off"
       : cfg.autoRecall === true,
-    recallMode: (["full", "summary", "off"].includes(cfg.recallMode) ? cfg.recallMode : undefined) as
-      | "full" | "summary" | "off" | undefined,
+    recallMode: (["full", "summary", "adaptive", "off"].includes(cfg.recallMode) ? cfg.recallMode : undefined) as
+      | "full" | "summary" | "adaptive" | "off" | undefined,
     autoRecallMinLength: parsePositiveInt(cfg.autoRecallMinLength),
     autoRecallMinRepeated: parsePositiveInt(cfg.autoRecallMinRepeated),
     autoRecallTopK: parsePositiveInt(cfg.autoRecallTopK) ?? DEFAULT_AUTO_RECALL_TOP_K,
