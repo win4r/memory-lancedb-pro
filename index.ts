@@ -2266,16 +2266,33 @@ const memoryLanceDBProPlugin = {
             return;
           }
 
+          // Determine recall depth: l0 = compact abstract, l1 = overview, full = complete text
+          const depthDefault = config.recallDepthDefault || "full";
+
           const preBudgetCandidates = governanceEligible.map((r) => {
             const metaObj = parseSmartMetadata(r.entry.metadata, r.entry);
             const displayCategory = metaObj.memory_category || r.entry.category;
             const displayTier = metaObj.tier || "";
             const tierPrefix = displayTier ? `[${displayTier.charAt(0).toUpperCase()}]` : "";
-            const abstract = metaObj.l0_abstract || r.entry.text;
-            const summary = sanitizeForContext(abstract).slice(0, autoRecallPerItemMaxChars);
+
+            // Select content based on recallDepthDefault
+            let displayText: string;
+            if (depthDefault === "l0") {
+              displayText = metaObj.l0_abstract || r.entry.text;
+            } else if (depthDefault === "l1") {
+              displayText = metaObj.l1_overview || metaObj.l0_abstract || r.entry.text;
+            } else {
+              // "full": use l2_content from metadata (true full text), fall back to entry.text
+              const l2 = typeof metaObj.l2_content === "string" ? metaObj.l2_content : null;
+              displayText = l2 || r.entry.text;
+            }
+
+            const summary = sanitizeForContext(displayText).slice(0, autoRecallPerItemMaxChars);
+            // Include short ID so agent can call memory_drill_down(id) for deeper content
+            const shortId = r.entry.id.slice(0, 8);
             return {
               id: r.entry.id,
-              prefix: `${tierPrefix}[${displayCategory}:${r.entry.scope}]`,
+              prefix: `${tierPrefix}[${displayCategory}:${r.entry.scope}|${shortId}]`,
               summary,
               chars: summary.length,
               meta: metaObj,

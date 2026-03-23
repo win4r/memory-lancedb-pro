@@ -1931,7 +1931,7 @@ export function registerMemoryDrillDownTool(
             }),
           ),
         }),
-        async execute(_toolCallId, params) {
+        async execute(_toolCallId, params, _signal, _onUpdate, runtimeCtx) {
           const { id, level = "full" } = params as {
             id: string;
             level?: "overview" | "full";
@@ -1950,6 +1950,19 @@ export function registerMemoryDrillDownTool(
               };
             }
 
+            // Scope check: verify the requesting agent has access to this memory's scope
+            const agentId = resolveRuntimeAgentId(runtimeContext.agentId, runtimeCtx);
+            if (!runtimeContext.scopeManager.isAccessible(entry.scope, agentId)) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `Access denied: memory ${id.slice(0, 8)} belongs to scope "${entry.scope}" which is not accessible to agent "${agentId}"`,
+                  },
+                ],
+              };
+            }
+
             // Parse metadata to extract L0/L1/L2
             let meta: Record<string, unknown> = {};
             if (entry.metadata) {
@@ -1960,7 +1973,8 @@ export function registerMemoryDrillDownTool(
 
             const l0 = typeof meta.l0_abstract === "string" ? meta.l0_abstract : null;
             const l1 = typeof meta.l1_overview === "string" ? meta.l1_overview : null;
-            const l2 = entry.text; // full text is always the L2 content
+            // entry.text stores L0 abstract; L2 full content is in metadata.l2_content
+            const l2 = typeof meta.l2_content === "string" ? meta.l2_content : entry.text;
 
             let content: string;
             if (level === "overview" && l1) {
