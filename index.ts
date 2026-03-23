@@ -75,6 +75,7 @@ interface PluginConfig {
   autoRecallExcludeReflection?: boolean;
   autoRecallMaxAgeDays?: number;
   autoRecallMaxEntriesPerKey?: number;
+  autoRecallTimeoutMs?: number;
   captureAssistant?: boolean;
   retrieval?: {
     mode?: "hybrid" | "vector";
@@ -260,6 +261,7 @@ const DEFAULT_AUTO_RECALL_TOP_K = 3;
 const DEFAULT_AUTO_RECALL_EXCLUDE_REFLECTION = true;
 const DEFAULT_AUTO_RECALL_MAX_AGE_DAYS = 30;
 const DEFAULT_AUTO_RECALL_MAX_ENTRIES_PER_KEY = 10;
+const DEFAULT_AUTO_RECALL_TIMEOUT_MS = 8_000;
 const DEFAULT_AUTO_RECALL_CATEGORIES: MemoryCategory[] = ["preference", "fact", "decision", "entity", "other"];
 const DEFAULT_REFLECTION_RECALL_MODE: ReflectionRecallMode = "fixed";
 const DEFAULT_REFLECTION_RECALL_TOP_K = 6;
@@ -1662,6 +1664,7 @@ const memoryLanceDBProPlugin = {
     // Auto-Recall: inject relevant memories before agent starts.
     // Default is OFF to prevent the model from accidentally echoing injected context.
     if (config.autoRecall === true) {
+      const autoRecallTimeoutMs = config.autoRecallTimeoutMs ?? DEFAULT_AUTO_RECALL_TIMEOUT_MS;
       api.on("before_agent_start", async (event, ctx) => {
         try {
           const agentId = ctx?.agentId || "main";
@@ -1669,7 +1672,7 @@ const memoryLanceDBProPlugin = {
           const accessibleScopes = scopeManager.getAccessibleScopes(agentId);
           const topK = config.autoRecallTopK ?? DEFAULT_AUTO_RECALL_TOP_K;
           const fetchLimit = Math.min(20, Math.max(topK * 4, topK, 8));
-          return await orchestrateDynamicRecall({
+          const recallPromise = orchestrateDynamicRecall({
             channelName: "auto-recall",
             prompt: event.prompt,
             minPromptLength: config.autoRecallMinLength,
@@ -1693,6 +1696,18 @@ const memoryLanceDBProPlugin = {
             formatLine: (row) =>
               `- [${row.entry.category}:${row.entry.scope}] ${sanitizeForContext(row.entry.text)} (${(row.score * 100).toFixed(0)}%${row.sources?.bm25 ? ", vector+BM25" : ""}${row.sources?.reranked ? "+reranked" : ""})`,
           });
+          const result = await Promise.race([
+            recallPromise,
+            new Promise<undefined>((resolve) =>
+              setTimeout(() => {
+                api.logger.warn(
+                  `memory-lancedb-pro: auto-recall timed out after ${autoRecallTimeoutMs}ms; skipping memory injection to avoid stalling agent startup`,
+                );
+                resolve(undefined);
+              }, autoRecallTimeoutMs),
+            ),
+          ]);
+          return result;
         } catch (err) {
           api.logger.warn(`memory-lancedb-pro: auto-recall failed: ${String(err)}`);
         }
@@ -2785,6 +2800,7 @@ export function parsePluginConfig(value: unknown): PluginConfig {
       : DEFAULT_AUTO_RECALL_EXCLUDE_REFLECTION,
     autoRecallMaxAgeDays: parsePositiveInt(cfg.autoRecallMaxAgeDays) ?? DEFAULT_AUTO_RECALL_MAX_AGE_DAYS,
     autoRecallMaxEntriesPerKey: parsePositiveInt(cfg.autoRecallMaxEntriesPerKey) ?? DEFAULT_AUTO_RECALL_MAX_ENTRIES_PER_KEY,
+    autoRecallTimeoutMs: parsePositiveInt(cfg.autoRecallTimeoutMs) ?? DEFAULT_AUTO_RECALL_TIMEOUT_MS,
     captureAssistant: cfg.captureAssistant === true,
     retrieval:
       typeof cfg.retrieval === "object" && cfg.retrieval !== null
