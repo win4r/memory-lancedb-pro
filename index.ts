@@ -2785,6 +2785,19 @@ const memoryLanceDBProPlugin = {
               return;
             }
 
+            // Skip self-improvement note on Discord channel (non-thread) resets
+            // to avoid contributing to the post-reset startup race on Discord channels.
+            // Discord thread resets are handled separately by the OpenClaw core's
+            // postRotationStartupUntilMs mechanism (PR #49001).
+            const provider = typeof contextForLog.Provider === "string" ? contextForLog.Provider : "";
+            const messageThreadId = contextForLog.MessageThreadId;
+            if (provider === "discord" && (messageThreadId == null || messageThreadId === "")) {
+              api.logger.info(
+                `self-improvement: command:${action} skipped on Discord channel (non-thread) reset to avoid startup race; use /new in thread or restart gateway if startup is incomplete`
+              );
+              return;
+            }
+
             const exists = event.messages.some((m: unknown) => typeof m === "string" && m.includes(SELF_IMPROVEMENT_NOTE_PREFIX));
             if (exists) {
               api.logger.info(`self-improvement: command:${action} note already present; skip duplicate inject`);
