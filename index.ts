@@ -1759,6 +1759,7 @@ const memoryLanceDBProPlugin = {
           oauthPath: llmOauthPath,
           timeoutMs: llmTimeoutMs,
           log: (msg: string) => api.logger.debug(msg),
+          warnLog: (msg: string) => api.logger.warn(msg),
         });
 
         // Initialize embedding-based noise prototype bank (async, non-blocking)
