@@ -89,6 +89,7 @@ interface PluginConfig {
   autoRecallMaxItems?: number;
   autoRecallMaxChars?: number;
   autoRecallPerItemMaxChars?: number;
+  autoRecallTimeoutMs?: number;
   captureAssistant?: boolean;
   retrieval?: {
     mode?: "hybrid" | "vector";
@@ -2162,7 +2163,7 @@ const memoryLanceDBProPlugin = {
         if (text) lastRawUserMessage.set(cacheKey, text);
       });
 
-      const AUTO_RECALL_TIMEOUT_MS = 3_000; // bounded timeout to prevent agent startup stall
+      const AUTO_RECALL_TIMEOUT_MS = config.autoRecallTimeoutMs ?? 3_000; // bounded timeout to prevent agent startup stall
       api.on("before_prompt_build", async (event: any, ctx: any) => {
         // Manually increment turn counter for this session
         const sessionId = ctx?.sessionId || "default";
