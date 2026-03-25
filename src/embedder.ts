@@ -237,15 +237,19 @@ function detectEmbeddingProviderProfile(
   model: string,
 ): EmbeddingProviderProfile {
   const base = baseURL || "";
+  let host = "";
+  try { host = new URL(base).hostname.toLowerCase(); } catch { /* invalid URL — skip host checks */ }
 
   // Host-based detection runs first — endpoint owner semantics take precedence
   // over model-name heuristics to avoid misclassifying e.g. a jina-xxx model
   // served from .nvidia.com as Jina instead of NVIDIA.
-  if (/api\.openai\.com/i.test(base)) return "openai";
-  if (/\.openai\.azure\.com/i.test(base)) return "azure-openai";
-  if (/api\.jina\.ai/i.test(base)) return "jina";
-  if (/api\.voyageai\.com/i.test(base)) return "voyage-compatible";
-  if (/\.nvidia\.com/i.test(base)) return "nvidia";
+  // Match on parsed hostname to avoid false positives from proxy URLs that
+  // contain provider domains in their path or query string.
+  if (host.endsWith("api.openai.com")) return "openai";
+  if (host.endsWith(".openai.azure.com")) return "azure-openai";
+  if (host.endsWith("api.jina.ai")) return "jina";
+  if (host.endsWith("api.voyageai.com")) return "voyage-compatible";
+  if (host.endsWith(".nvidia.com") || host === "nvidia.com") return "nvidia";
 
   // Model-prefix fallback — only when baseURL didn't match a known host
   if (/^jina-/i.test(model)) return "jina";
