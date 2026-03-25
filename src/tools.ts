@@ -102,20 +102,16 @@ function deriveManualMemoryLayer(category: string): "durable" | "working" {
 }
 
 function sanitizeMemoryForSerialization(results: RetrievalResult[]) {
-  return results.map((r) => {
-    const metadata = parseSmartMetadata(r.entry.metadata, r.entry);
-    return {
-      id: r.entry.id,
-      text: r.entry.text,
-      fullText: metadata.l2_content || metadata.l1_overview || r.entry.text,
-      category: getDisplayCategoryTag(r.entry),
-      rawCategory: r.entry.category,
-      scope: r.entry.scope,
-      importance: r.entry.importance,
-      score: r.score,
-      sources: r.sources,
-    };
-  });
+  return results.map((r) => ({
+    id: r.entry.id,
+    text: r.entry.text,
+    category: getDisplayCategoryTag(r.entry),
+    rawCategory: r.entry.category,
+    scope: r.entry.scope,
+    importance: r.entry.importance,
+    score: r.score,
+    sources: r.sources,
+  }));
 }
 
 const _warnedMissingAgentId = new Set<string>();
@@ -618,6 +614,15 @@ export function registerMemoryRecallTool(
             })
             .join("\n");
 
+          const serializedMemories = sanitizeMemoryForSerialization(results);
+          if (includeFullText) {
+            for (let i = 0; i < results.length; i++) {
+              const metadata = parseSmartMetadata(results[i].entry.metadata, results[i].entry);
+              (serializedMemories[i] as Record<string, unknown>).fullText =
+                metadata.l2_content || metadata.l1_overview || results[i].entry.text;
+            }
+          }
+
           return {
             content: [
               {
@@ -627,7 +632,7 @@ export function registerMemoryRecallTool(
             ],
             details: {
               count: results.length,
-              memories: sanitizeMemoryForSerialization(results),
+              memories: serializedMemories,
               query,
               scopes: scopeFilter,
               retrievalMode: runtimeContext.retriever.getConfig().mode,

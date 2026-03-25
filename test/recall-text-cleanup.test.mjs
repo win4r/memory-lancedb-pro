@@ -479,6 +479,72 @@ describe("recall text cleanup", () => {
     assert.equal(resFull.details.memories[0].text, l0, "details.memories[0].text should still be L0 for compatibility");
   });
 
+  it("includeFullText=false does not expose fullText in details.memories", async () => {
+    const l0 = "short L0 abstract";
+    const l2 = "Full L2 narrative that should not appear when includeFullText is false.";
+
+    const results = [
+      {
+        entry: {
+          id: "case-2",
+          text: l0,
+          category: "fact",
+          scope: "global",
+          importance: 0.85,
+          timestamp: Date.now(),
+          metadata: stringifySmartMetadata(
+            buildSmartMetadata(
+              { text: l0, category: "fact", importance: 0.85 },
+              {
+                l0_abstract: l0,
+                l1_overview: "## Overview\n- some overview",
+                l2_content: l2,
+                memory_category: "cases",
+                fact_key: "cases:opt-in-check",
+              },
+            ),
+          ),
+        },
+        score: 0.9,
+        sources: { vector: { score: 0.9, rank: 1 } },
+      },
+    ];
+
+    const tool = createTool(registerMemoryRecallTool, makeRecallContext(results));
+    const res = await tool.execute(null, { query: "opt-in check" });
+
+    assert.equal(res.details.memories[0].fullText, undefined, "fullText should be absent when includeFullText=false");
+    assert.equal(res.details.memories[0].text, l0, "text should still carry L0");
+  });
+
+  it("includeFullText=true falls back to entry.text for legacy memories without smart metadata", async () => {
+    const legacyText = "legacy memory with no smart metadata at all";
+
+    const results = [
+      {
+        entry: {
+          id: "legacy-1",
+          text: legacyText,
+          category: "fact",
+          scope: "global",
+          importance: 0.6,
+          timestamp: Date.now(),
+          // no metadata field — simulates pre-smart-extraction records
+        },
+        score: 0.75,
+        sources: { vector: { score: 0.75, rank: 1 } },
+      },
+    ];
+
+    const tool = createTool(registerMemoryRecallTool, makeRecallContext(results));
+    const res = await tool.execute(null, { query: "legacy fallback", includeFullText: true });
+    const lines = extractRenderedMemoryRecallLines(res.content[0].text);
+
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /legacy memory with no smart metadata/, "should render entry.text as fallback for legacy memories");
+    assert.equal(res.details.memories[0].fullText, legacyText, "details.memories[0].fullText should fall back to entry.text");
+  });
+
 
   it("applies auto-recall item/char budgets before injecting context", async () => {
     MemoryRetriever.prototype.retrieve = async () => makeManyResults(5);
