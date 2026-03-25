@@ -73,6 +73,11 @@ import {
   type AdmissionRejectionAuditEntry,
 } from "./src/admission-control.js";
 import { analyzeIntent, applyCategoryBoost } from "./src/intent-analyzer.js";
+import {
+  resolveEnvVarsSync,
+  resolveSecretValueSync,
+  resolveSecretValuesSync,
+} from "./src/secret-resolver.js";
 
 // ============================================================================
 // Configuration & Types
@@ -155,10 +160,12 @@ interface PluginConfig {
   // Smart extraction config
   smartExtraction?: boolean;
   llm?: {
+    api?: "openai-completions" | "anthropic-messages";
     auth?: "api-key" | "oauth";
     apiKey?: string;
     model?: string;
     baseURL?: string;
+    anthropicVersion?: string;
     oauthProvider?: string;
     oauthPath?: string;
     timeoutMs?: number;
@@ -237,13 +244,7 @@ function resolveWorkspaceDirFromContext(context: Record<string, unknown> | undef
 }
 
 function resolveEnvVars(value: string): string {
-  return value.replace(/\$\{([^}]+)\}/g, (_, envVar) => {
-    const envValue = process.env[envVar];
-    if (!envValue) {
-      throw new Error(`Environment variable ${envVar} is not set`);
-    }
-    return envValue;
-  });
+  return resolveEnvVarsSync(value);
 }
 
 function resolveFirstApiKey(apiKey: string | string[]): string {
@@ -251,7 +252,7 @@ function resolveFirstApiKey(apiKey: string | string[]): string {
   if (!key) {
     throw new Error("embedding.apiKey is empty");
   }
-  return resolveEnvVars(key);
+  return resolveSecretValueSync(key);
 }
 
 function resolveOptionalPathWithEnv(
@@ -1608,9 +1609,20 @@ const memoryLanceDBProPlugin = {
 
     // Initialize core components
     const store = new MemoryStore({ dbPath: resolvedDbPath, vectorDim });
+    const resolvedEmbeddingApiKeys = resolveSecretValuesSync(config.embedding.apiKey);
+    const resolvedRerankApiKey = typeof config.retrieval?.rerankApiKey === "string" && config.retrieval.rerankApiKey.trim()
+      ? resolveSecretValueSync(config.retrieval.rerankApiKey)
+      : undefined;
+    const resolvedRetrievalConfig = config.retrieval
+      ? {
+        ...config.retrieval,
+        ...(resolvedRerankApiKey ? { rerankApiKey: resolvedRerankApiKey } : {}),
+      }
+      : undefined;
+
     const embedder = createEmbedder({
       provider: "openai-compatible",
-      apiKey: config.embedding.apiKey,
+      apiKey: resolvedEmbeddingApiKeys.length === 1 ? resolvedEmbeddingApiKeys[0] : resolvedEmbeddingApiKeys,
       model: config.embedding.model || "text-embedding-3-small",
       baseURL: config.embedding.baseURL,
       dimensions: config.embedding.dimensions,
@@ -1634,7 +1646,7 @@ const memoryLanceDBProPlugin = {
       embedder,
       {
         ...DEFAULT_RETRIEVAL_CONFIG,
-        ...config.retrieval,
+        ...resolvedRetrievalConfig,
       },
       { decayEngine },
     );
@@ -1654,10 +1666,11 @@ const memoryLanceDBProPlugin = {
     if (config.smartExtraction !== false) {
       try {
         const llmAuth = config.llm?.auth || "api-key";
+        const llmApi = config.llm?.api || "openai-completions";
         const llmApiKey = llmAuth === "oauth"
           ? undefined
           : config.llm?.apiKey
-            ? resolveEnvVars(config.llm.apiKey)
+            ? resolveSecretValueSync(config.llm.apiKey)
             : resolveFirstApiKey(config.embedding.apiKey);
         const llmBaseURL = llmAuth === "oauth"
           ? (config.llm?.baseURL ? resolveEnvVars(config.llm.baseURL) : undefined)
@@ -1674,10 +1687,12 @@ const memoryLanceDBProPlugin = {
         const llmTimeoutMs = resolveLlmTimeoutMs(config);
 
         const llmClient = createLlmClient({
+          api: llmApi,
           auth: llmAuth,
           apiKey: llmApiKey,
           model: llmModel,
           baseURL: llmBaseURL,
+          anthropicVersion: config.llm?.anthropicVersion,
           oauthProvider: llmOauthProvider,
           oauthPath: llmOauthPath,
           timeoutMs: llmTimeoutMs,
@@ -2155,10 +2170,11 @@ const memoryLanceDBProPlugin = {
         llmClient: smartExtractor ? (() => {
           try {
             const llmAuth = config.llm?.auth || "api-key";
+            const llmApi = config.llm?.api || "openai-completions";
             const llmApiKey = llmAuth === "oauth"
               ? undefined
               : config.llm?.apiKey
-                ? resolveEnvVars(config.llm.apiKey)
+                ? resolveSecretValueSync(config.llm.apiKey)
                 : resolveFirstApiKey(config.embedding.apiKey);
             const llmBaseURL = llmAuth === "oauth"
               ? (config.llm?.baseURL ? resolveEnvVars(config.llm.baseURL) : undefined)
@@ -2173,10 +2189,12 @@ const memoryLanceDBProPlugin = {
               : undefined;
             const llmTimeoutMs = resolveLlmTimeoutMs(config);
             return createLlmClient({
+              api: llmApi,
               auth: llmAuth,
               apiKey: llmApiKey,
               model: config.llm?.model || "openai/gpt-oss-120b",
               baseURL: llmBaseURL,
+              anthropicVersion: config.llm?.anthropicVersion,
               oauthProvider: llmOauthProvider,
               oauthPath: llmOauthPath,
               timeoutMs: llmTimeoutMs,

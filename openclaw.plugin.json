@@ -34,7 +34,7 @@
                 "minItems": 1
               }
             ],
-            "description": "Single API key or array of keys for round-robin rotation"
+            "description": "Single API key or array of keys for round-robin rotation. Supports ${ENV_VAR} and bws://<secret-id> Bitwarden secret references."
           },
           "model": {
             "type": "string"
@@ -300,7 +300,7 @@
           },
           "rerankApiKey": {
             "type": "string",
-            "description": "API key for reranker service (enables cross-encoder reranking)"
+            "description": "API key for reranker service (enables cross-encoder reranking). Supports ${ENV_VAR} and bws://<secret-id> Bitwarden secret references."
           },
           "rerankModel": {
             "type": "string",
@@ -659,6 +659,15 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "api": {
+            "type": "string",
+            "enum": [
+              "openai-completions",
+              "anthropic-messages"
+            ],
+            "default": "openai-completions",
+            "description": "LLM API format. openai-completions uses OpenAI-compatible chat completions; anthropic-messages uses Anthropic-compatible /v1/messages."
+          },
           "auth": {
             "type": "string",
             "enum": [
@@ -669,7 +678,8 @@
             "description": "LLM authentication mode. oauth uses the local Codex/ChatGPT login cache instead of llm.apiKey."
           },
           "apiKey": {
-            "type": "string"
+            "type": "string",
+            "description": "LLM API key. Supports ${ENV_VAR} and bws://<secret-id> Bitwarden secret references."
           },
           "model": {
             "type": "string",
@@ -677,6 +687,11 @@
           },
           "baseURL": {
             "type": "string"
+          },
+          "anthropicVersion": {
+            "type": "string",
+            "default": "2023-06-01",
+            "description": "Anthropic API version header used when llm.api=anthropic-messages."
           },
           "oauthProvider": {
             "type": "string",
@@ -835,8 +850,8 @@
     "embedding.apiKey": {
       "label": "API Key(s)",
       "sensitive": true,
-      "placeholder": "sk-proj-... or [\"key1\", \"key2\"] for rotation",
-      "help": "Single API key or array of keys for round-robin rotation with automatic failover on rate limits (or use ${OPENAI_API_KEY}; use a dummy value for keyless local endpoints)"
+      "placeholder": "sk-proj-... or bws://<secret-id> or [\"key1\", \"key2\"]",
+      "help": "Single API key or array of keys for round-robin rotation with automatic failover on rate limits. Supports ${OPENAI_API_KEY} and bws://<secret-id> Bitwarden refs. Use a dummy value for keyless local endpoints."
     },
     "embedding.model": {
       "label": "Embedding Model",
@@ -895,8 +910,13 @@
     "llm.apiKey": {
       "label": "LLM API Key",
       "sensitive": true,
-      "placeholder": "sk-... or ${GROQ_API_KEY}",
-      "help": "API key for LLM used by smart memory extraction (defaults to embedding.apiKey if omitted)"
+      "placeholder": "sk-... or ${GROQ_API_KEY} or bws://<secret-id>",
+      "help": "API key for LLM used by smart memory extraction (defaults to embedding.apiKey if omitted). Supports Bitwarden bws:// refs."
+    },
+    "llm.api": {
+      "label": "LLM API Format",
+      "help": "openai-completions for OpenAI-compatible chat endpoints, anthropic-messages for Anthropic-compatible /v1/messages endpoints.",
+      "advanced": true
     },
     "llm.model": {
       "label": "LLM Model",
@@ -906,7 +926,13 @@
     "llm.baseURL": {
       "label": "LLM Base URL",
       "placeholder": "https://api.groq.com/openai/v1",
-      "help": "OpenAI-compatible base URL for LLM (defaults to embedding.baseURL if omitted)",
+      "help": "Base URL for the configured llm.api format (defaults to embedding.baseURL if omitted for openai-completions)",
+      "advanced": true
+    },
+    "llm.anthropicVersion": {
+      "label": "Anthropic Version",
+      "placeholder": "2023-06-01",
+      "help": "Anthropic API version header used when llm.api=anthropic-messages",
       "advanced": true
     },
     "extractMinMessages": {
@@ -1050,8 +1076,8 @@
     "retrieval.rerankApiKey": {
       "label": "Reranker API Key",
       "sensitive": true,
-      "placeholder": "jina_... / sk-... / pcsk_...",
-      "help": "Reranker API key for cross-encoder reranking",
+      "placeholder": "jina_... / sk-... / pcsk_... / bws://<secret-id>",
+      "help": "Reranker API key for cross-encoder reranking. Supports Bitwarden bws:// refs.",
       "advanced": true
     },
     "retrieval.rerankModel": {
@@ -1280,7 +1306,7 @@
     },
     "llm.auth": {
       "label": "LLM Auth",
-      "help": "api-key uses llm.apiKey or embedding.apiKey. oauth uses a plugin-scoped OAuth token file by default.",
+      "help": "api-key uses llm.apiKey or embedding.apiKey. oauth uses a plugin-scoped OAuth token file by default and only supports llm.api=openai-completions.",
       "advanced": true
     },
     "llm.oauthProvider": {

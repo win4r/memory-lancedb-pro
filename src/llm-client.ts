@@ -18,6 +18,8 @@ export interface LlmClientConfig {
   apiKey?: string;
   model: string;
   baseURL?: string;
+  api?: "openai-completions" | "anthropic-messages";
+  anthropicVersion?: string;
   auth?: "api-key" | "oauth";
   oauthPath?: string;
   oauthProvider?: string;
@@ -175,6 +177,10 @@ function createTimeoutSignal(timeoutMs?: number): { signal: AbortSignal; dispose
 function createApiKeyClient(config: LlmClientConfig, log: (msg: string) => void): LlmClient {
   if (!config.apiKey) {
     throw new Error("LLM api-key mode requires llm.apiKey or embedding.apiKey");
+  }
+
+  if (config.api === "anthropic-messages") {
+    return createAnthropicApiKeyClient(config, log);
   }
 
   const client = new OpenAI({
@@ -410,9 +416,135 @@ function createOauthClient(config: LlmClientConfig, log: (msg: string) => void):
   };
 }
 
+function normalizeAnthropicMessagesEndpoint(baseURL?: string): string {
+  const trimmed = baseURL?.trim();
+  if (!trimmed) return "https://api.anthropic.com/v1/messages";
+  if (/\/messages\/?$/i.test(trimmed)) return trimmed;
+  return `${trimmed.replace(/\/+$/, "")}/messages`;
+}
+
+function extractAnthropicText(payload: Record<string, unknown>): string | null {
+  const content = Array.isArray(payload.content) ? payload.content : [];
+  const text = content
+    .filter(
+      (part) =>
+        part &&
+        typeof part === "object" &&
+        (part as Record<string, unknown>).type === "text" &&
+        typeof (part as Record<string, unknown>).text === "string",
+    )
+    .map((part) => String((part as Record<string, unknown>).text))
+    .join("");
+  return text.trim() || null;
+}
+
+function createAnthropicApiKeyClient(config: LlmClientConfig, log: (msg: string) => void): LlmClient {
+  let lastError: string | null = null;
+  const endpoint = normalizeAnthropicMessagesEndpoint(config.baseURL);
+  const anthropicVersion = config.anthropicVersion?.trim() || "2023-06-01";
+
+  return {
+    async completeJson<T>(prompt: string, label = "generic"): Promise<T | null> {
+      lastError = null;
+      const { signal, dispose } = createTimeoutSignal(config.timeoutMs);
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            "x-api-key": config.apiKey!,
+            "anthropic-version": anthropicVersion,
+          },
+          signal,
+          body: JSON.stringify({
+            model: config.model,
+            system:
+              "You are a memory extraction assistant. Always respond with valid JSON only.",
+            messages: [
+              {
+                role: "user",
+                content: prompt,
+              },
+            ],
+            max_tokens: 2048,
+            temperature: 0.1,
+          }),
+        });
+
+        const bodyText = await response.text();
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} ${response.statusText}: ${bodyText.slice(0, 500)}`);
+        }
+
+        let raw: string | null = null;
+        try {
+          raw = extractAnthropicText(JSON.parse(bodyText) as Record<string, unknown>);
+        } catch (error) {
+          throw new Error(
+            `Failed to parse Anthropic response JSON: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+
+        if (!raw) {
+          lastError =
+            `memory-lancedb-pro: llm-client [${label}] empty Anthropic response content from model ${config.model}`;
+          log(lastError);
+          return null;
+        }
+
+        const jsonStr = extractJsonFromResponse(raw);
+        if (!jsonStr) {
+          lastError =
+            `memory-lancedb-pro: llm-client [${label}] no JSON object found in Anthropic response (chars=${raw.length}, preview=${JSON.stringify(previewText(raw))})`;
+          log(lastError);
+          return null;
+        }
+
+        try {
+          return JSON.parse(jsonStr) as T;
+        } catch (err) {
+          const repairedJsonStr = repairCommonJson(jsonStr);
+          if (repairedJsonStr !== jsonStr) {
+            try {
+              const repaired = JSON.parse(repairedJsonStr) as T;
+              log(
+                `memory-lancedb-pro: llm-client [${label}] recovered malformed Anthropic JSON via heuristic repair (jsonChars=${jsonStr.length})`,
+              );
+              return repaired;
+            } catch (repairErr) {
+              lastError =
+                `memory-lancedb-pro: llm-client [${label}] Anthropic JSON.parse failed: ${err instanceof Error ? err.message : String(err)}; repair failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)} (jsonChars=${jsonStr.length}, jsonPreview=${JSON.stringify(previewText(jsonStr))})`;
+              log(lastError);
+              return null;
+            }
+          }
+          lastError =
+            `memory-lancedb-pro: llm-client [${label}] Anthropic JSON.parse failed: ${err instanceof Error ? err.message : String(err)} (jsonChars=${jsonStr.length}, jsonPreview=${JSON.stringify(previewText(jsonStr))})`;
+          log(lastError);
+          return null;
+        }
+      } catch (err) {
+        lastError =
+          `memory-lancedb-pro: llm-client [${label}] Anthropic request failed for model ${config.model}: ${err instanceof Error ? err.message : String(err)}`;
+        log(lastError);
+        return null;
+      } finally {
+        dispose();
+      }
+    },
+    getLastError(): string | null {
+      return lastError;
+    },
+  };
+}
+
 export function createLlmClient(config: LlmClientConfig): LlmClient {
   const log = config.log ?? (() => {});
   if (config.auth === "oauth") {
+    if (config.api === "anthropic-messages") {
+      throw new Error("LLM oauth mode only supports llm.api=openai-completions");
+    }
     return createOauthClient(config, log);
   }
   return createApiKeyClient(config, log);
