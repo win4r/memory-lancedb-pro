@@ -28,7 +28,7 @@ export interface RetrievalTrace {
   /** The original search query */
   query: string;
   /** Retrieval mode used */
-  mode: "hybrid" | "vector";
+  mode: "hybrid" | "vector" | "bm25";
   /** Timestamp when retrieval started (epoch ms) */
   startedAt: number;
   /** Per-stage results in pipeline order */
@@ -128,7 +128,7 @@ export class TraceCollector {
     const lastStage = this._stages[this._stages.length - 1];
     return {
       query,
-      mode: mode as "hybrid" | "vector",
+      mode: mode as "hybrid" | "vector" | "bm25",
       startedAt: this._startTime,
       stages: this._stages,
       finalCount: lastStage ? lastStage.outputCount : 0,

@@ -417,7 +417,7 @@ export class MemoryRetriever {
 
     // Feed completed trace to stats collector
     if (trace && this._statsCollector) {
-      const mode = tagTokens.length > 0 ? "vector"
+      const mode = tagTokens.length > 0 ? "bm25"
         : (this.config.mode === "vector" || !this.store.hasFtsSupport) ? "vector" : "hybrid";
       const finalTrace = trace.finalize(query, mode);
       this._statsCollector.recordQuery(finalTrace, source || "unknown");
@@ -459,7 +459,7 @@ export class MemoryRetriever {
       );
     }
 
-    const mode = tagTokens.length > 0 ? "vector"
+    const mode = tagTokens.length > 0 ? "bm25"
       : (this.config.mode === "vector" || !this.store.hasFtsSupport) ? "vector" : "hybrid";
     const finalTrace = trace.finalize(query, mode);
 

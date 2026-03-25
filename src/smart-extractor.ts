@@ -220,6 +220,9 @@ export class SmartExtractor {
       `memory-pro: smart-extractor: extracted ${candidates.length} candidate(s)`,
     );
 
+    // TODO: Wire batchDedup() here — embed candidate abstracts upfront, dedup,
+    // then process survivors (see src/batch-dedup.ts)
+
     // Step 2: Process each candidate through dedup pipeline
     for (const candidate of candidates.slice(0, MAX_MEMORIES_PER_EXTRACTION)) {
       if (
