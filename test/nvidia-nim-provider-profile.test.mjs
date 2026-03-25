@@ -121,6 +121,54 @@ describe("NVIDIA NIM provider profile", () => {
     assert.equal(message, "Failed to generate embedding from NVIDIA NIM: boom");
   });
 
+  it(".nvidia.com baseURL with conflicting jina- model prefix → NVIDIA wins", async () => {
+    const dims = 128;
+    await withCaptureServer(dims, async ({ baseURL, getCaptured }) => {
+      // Replace localhost URL with a .nvidia.com URL for detection, but route
+      // the actual HTTP request to the capture server.
+      const nvidiaBaseURL = baseURL.replace("127.0.0.1", "integrate.api.nvidia.com");
+      const embedder = new Embedder({
+        baseURL, // actual network target
+        model: "jina-embeddings-v3",
+        apiKey: "test-key",
+        dimensions: dims,
+        taskQuery: "retrieval.query",
+        taskPassage: "retrieval.passage",
+      });
+      // Override the detected profile by using a real .nvidia.com baseURL in detection
+      // We test detection separately via the error label path:
+      const message = formatEmbeddingProviderError(new Error("test"), {
+        baseURL: "https://integrate.api.nvidia.com/v1",
+        model: "jina-embeddings-v3",
+        mode: "single",
+      });
+      assert.equal(message, "Failed to generate embedding from NVIDIA NIM: test",
+        ".nvidia.com host should win over jina- model prefix");
+    });
+  });
+
+  it(".nvidia.com baseURL without taskQuery/taskPassage → no input_type injected", async () => {
+    const dims = 128;
+    await withCaptureServer(dims, async ({ baseURL, getCaptured }) => {
+      const embedder = new Embedder({
+        baseURL,
+        model: "nvidia/nv-clip-v1",
+        apiKey: "test-key",
+        dimensions: dims,
+        // Deliberately omit taskQuery and taskPassage
+      });
+
+      await embedder.embedQuery("test query");
+      const body = getCaptured();
+
+      assert.ok(body, "Request body should be captured");
+      assert.equal(body.input_type, undefined,
+        "NVIDIA profile without taskQuery/taskPassage should NOT inject input_type");
+      assert.equal(body.task, undefined,
+        "NVIDIA profile without taskQuery/taskPassage should NOT inject task");
+    });
+  });
+
   it("non-NVIDIA: Jina sends task field", async () => {
     const dims = 128;
     await withCaptureServer(dims, async ({ baseURL, getCaptured }) => {

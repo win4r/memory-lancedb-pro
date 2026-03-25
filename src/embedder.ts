@@ -238,16 +238,19 @@ function detectEmbeddingProviderProfile(
 ): EmbeddingProviderProfile {
   const base = baseURL || "";
 
+  // Host-based detection runs first — endpoint owner semantics take precedence
+  // over model-name heuristics to avoid misclassifying e.g. a jina-xxx model
+  // served from .nvidia.com as Jina instead of NVIDIA.
   if (/api\.openai\.com/i.test(base)) return "openai";
   if (/\.openai\.azure\.com/i.test(base)) return "azure-openai";
-  if (/api\.jina\.ai/i.test(base) || /^jina-/i.test(model)) return "jina";
-  if (/api\.voyageai\.com/i.test(base) || /^voyage\b/i.test(model)) {
-    return "voyage-compatible";
-  }
+  if (/api\.jina\.ai/i.test(base)) return "jina";
+  if (/api\.voyageai\.com/i.test(base)) return "voyage-compatible";
+  if (/\.nvidia\.com/i.test(base)) return "nvidia";
 
-  if (/\.nvidia\.com/i.test(base) || /^nvidia\//i.test(model) || /^nv-embed/i.test(model)) {
-    return "nvidia";
-  }
+  // Model-prefix fallback — only when baseURL didn't match a known host
+  if (/^jina-/i.test(model)) return "jina";
+  if (/^voyage\b/i.test(model)) return "voyage-compatible";
+  if (/^nvidia\//i.test(model) || /^nv-embed/i.test(model)) return "nvidia";
 
   return "generic-openai-compatible";
 }
@@ -654,7 +657,11 @@ export class Embedder {
       payload.normalized = this._normalized;
     }
 
-    // Task hint: field name and optional value translation are provider-defined.
+    // Task hint: only injected when BOTH the provider profile defines a taskField
+    // AND the caller passes a task value (from user-configured taskQuery/taskPassage).
+    // This means broad provider detection (e.g. any .nvidia.com host) is safe —
+    // non-retriever models that don't expect input_type are unaffected unless the
+    // user explicitly configures task hints.
     if (this._capabilities.taskField && task) {
       const cap = this._capabilities;
       const value = cap.taskValueMap?.[task] ?? task;
