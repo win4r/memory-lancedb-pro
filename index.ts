@@ -100,6 +100,8 @@ interface PluginConfig {
   autoRecallMaxItems?: number;
   autoRecallMaxChars?: number;
   autoRecallPerItemMaxChars?: number;
+  /** Hard per-turn injection cap (safety valve). Overrides autoRecallMaxItems if lower. Default: 10. */
+  maxRecallPerTurn?: number;
   recallMode?: "full" | "summary" | "adaptive" | "off";
   captureAssistant?: boolean;
   retrieval?: {
@@ -2255,7 +2257,10 @@ const memoryLanceDBProPlugin = {
             );
           }
 
-          const autoRecallMaxItems = clampInt(config.autoRecallMaxItems ?? 3, 1, 20);
+          const configMaxItems = clampInt(config.autoRecallMaxItems ?? 3, 1, 20);
+          const maxPerTurn = clampInt(config.maxRecallPerTurn ?? 10, 1, 50);
+          // maxRecallPerTurn acts as a hard ceiling on top of autoRecallMaxItems (#345)
+          const autoRecallMaxItems = Math.min(configMaxItems, maxPerTurn);
           const autoRecallMaxChars = clampInt(config.autoRecallMaxChars ?? 600, 64, 8000);
           const autoRecallPerItemMaxChars = clampInt(config.autoRecallPerItemMaxChars ?? 180, 32, 1000);
           const retrieveLimit = clampInt(Math.max(autoRecallMaxItems * 2, autoRecallMaxItems), 1, 20);
@@ -2473,6 +2478,10 @@ const memoryLanceDBProPlugin = {
               `${memoryContext}\n` +
               `[END UNTRUSTED DATA]\n` +
               `</relevant-memories>`,
+            // Mark as ephemeral so the host framework's compaction logic can
+            // safely discard injected memory blocks instead of persisting them
+            // into the session transcript (#345).
+            ephemeral: true,
           };
         };
 
@@ -2493,6 +2502,22 @@ const memoryLanceDBProPlugin = {
         } catch (err) {
           clearTimeout(timeoutId);
           api.logger.warn(`memory-lancedb-pro: recall failed: ${String(err)}`);
+        }
+      }, { priority: 10 });
+
+      // Clean up auto-recall session state on session end to prevent unbounded
+      // growth of recallHistory and turnCounter Maps (#345).
+      api.on("session_end", (_event: any, ctx: any) => {
+        const sessionId = ctx?.sessionId || "";
+        if (sessionId) {
+          recallHistory.delete(sessionId);
+          turnCounter.delete(sessionId);
+          lastRawUserMessage.delete(sessionId);
+        }
+        // Also clean by channelId/conversationId if present (shared cache key)
+        const cacheKey = ctx?.channelId || ctx?.conversationId || "";
+        if (cacheKey && cacheKey !== sessionId) {
+          lastRawUserMessage.delete(cacheKey);
         }
       }, { priority: 10 });
     }
@@ -3766,6 +3791,7 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     autoRecallMaxItems: parsePositiveInt(cfg.autoRecallMaxItems) ?? 3,
     autoRecallMaxChars: parsePositiveInt(cfg.autoRecallMaxChars) ?? 600,
     autoRecallPerItemMaxChars: parsePositiveInt(cfg.autoRecallPerItemMaxChars) ?? 180,
+    maxRecallPerTurn: parsePositiveInt(cfg.maxRecallPerTurn) ?? 10,
     captureAssistant: cfg.captureAssistant === true,
     retrieval: typeof cfg.retrieval === "object" && cfg.retrieval !== null ? cfg.retrieval as any : undefined,
     decay: typeof cfg.decay === "object" && cfg.decay !== null ? cfg.decay as any : undefined,
