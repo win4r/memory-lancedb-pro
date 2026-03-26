@@ -2802,7 +2802,11 @@ const memoryLanceDBProPlugin = {
                     l2_content: text,
                     source_session: (event as any).sessionKey || "unknown",
                     source: "auto-capture",
-                    state: "pending",
+                    // Write "confirmed" so auto-recall governance filter accepts
+                    // these memories immediately. Previously "pending" caused a
+                    // deadlock where auto-captured memories could never be
+                    // auto-recalled (see #350).
+                    state: "confirmed",
                     memory_layer: "working",
                     injected_count: 0,
                     bad_recall_count: 0,
