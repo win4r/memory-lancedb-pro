@@ -24,12 +24,6 @@ import { appendSelfImprovementEntry, ensureSelfImprovementLearningFiles } from "
 import type { MdMirrorWriter } from "./src/tools.js";
 import { shouldSkipRetrieval } from "./src/adaptive-retrieval.js";
 import { parseClawteamScopes, applyClawteamScopes } from "./src/clawteam-scope.js";
-import {
-  runCompaction,
-  shouldRunCompaction,
-  recordCompactionRun,
-  type CompactionConfig,
-} from "./src/memory-compactor.js";
 import { runWithReflectionTransientRetryOnce } from "./src/reflection-retry.js";
 import { resolveReflectionSessionSearchDirs, stripResetSuffix } from "./src/session-recovery.js";
 import {
@@ -45,11 +39,9 @@ import { createReflectionEventId } from "./src/reflection-event-store.js";
 import { buildReflectionMappedMetadata } from "./src/reflection-mapped-metadata.js";
 import { createMemoryCLI } from "./cli.js";
 import { isNoise } from "./src/noise-filter.js";
-import { normalizeAutoCaptureText } from "./src/auto-capture-cleanup.js";
 
 // Import smart extraction & lifecycle components
-import { SmartExtractor, createExtractionRateLimiter } from "./src/smart-extractor.js";
-import { compressTexts, estimateConversationValue } from "./src/session-compressor.js";
+import { SmartExtractor } from "./src/smart-extractor.js";
 import { NoisePrototypeBank } from "./src/noise-prototypes.js";
 import { createLlmClient } from "./src/llm-client.js";
 import { createDecayEngine, DEFAULT_DECAY_CONFIG } from "./src/decay-engine.js";
@@ -72,7 +64,6 @@ import {
   type AdmissionControlConfig,
   type AdmissionRejectionAuditEntry,
 } from "./src/admission-control.js";
-import { analyzeIntent, applyCategoryBoost } from "./src/intent-analyzer.js";
 
 // ============================================================================
 // Configuration & Types
@@ -85,7 +76,6 @@ interface PluginConfig {
     model?: string;
     baseURL?: string;
     dimensions?: number;
-    omitDimensions?: boolean;
     taskQuery?: string;
     taskPassage?: string;
     normalized?: boolean;
@@ -96,11 +86,10 @@ interface PluginConfig {
   autoRecall?: boolean;
   autoRecallMinLength?: number;
   autoRecallMinRepeated?: number;
-  autoRecallTimeoutMs?: number;
   autoRecallMaxItems?: number;
   autoRecallMaxChars?: number;
   autoRecallPerItemMaxChars?: number;
-  recallMode?: "full" | "summary" | "adaptive" | "off";
+  autoRecallTimeoutMs?: number;
   captureAssistant?: boolean;
   retrieval?: {
     mode?: "hybrid" | "vector";
@@ -195,22 +184,6 @@ interface PluginConfig {
   mdMirror?: { enabled?: boolean; dir?: string };
   workspaceBoundary?: WorkspaceBoundaryConfig;
   admissionControl?: AdmissionControlConfig;
-  memoryCompaction?: {
-    enabled?: boolean;
-    minAgeDays?: number;
-    similarityThreshold?: number;
-    minClusterSize?: number;
-    maxMemoriesToScan?: number;
-    cooldownHours?: number;
-  };
-  sessionCompression?: {
-    enabled?: boolean;
-    minScoreToKeep?: number;
-  };
-  extractionThrottle?: {
-    skipLowValue?: boolean;
-    maxExtractionsPerHour?: number;
-  };
 }
 
 type ReflectionThinkLevel = "off" | "minimal" | "low" | "medium" | "high";
@@ -727,9 +700,64 @@ function shouldSkipReflectionMessage(role: string, text: string): boolean {
   return false;
 }
 
+const AUTO_CAPTURE_INBOUND_META_SENTINELS = [
+  "Conversation info (untrusted metadata):",
+  "Sender (untrusted metadata):",
+  "Thread starter (untrusted, for context):",
+  "Replied message (untrusted, for context):",
+  "Forwarded message context (untrusted metadata):",
+  "Chat history since last reply (untrusted, for context):",
+] as const;
+
+const AUTO_CAPTURE_SESSION_RESET_PREFIX =
+  "A new session was started via /new or /reset. Execute your Session Startup sequence now";
+const AUTO_CAPTURE_ADDRESSING_PREFIX_RE = /^(?:<@!?[0-9]+>|@[A-Za-z0-9_.-]+)\s*/;
 const AUTO_CAPTURE_MAP_MAX_ENTRIES = 2000;
 const AUTO_CAPTURE_EXPLICIT_REMEMBER_RE =
   /^(?:请|請)?(?:记住|記住|记一下|記一下|别忘了|別忘了)[。.!?？!]*$/u;
+
+function isAutoCaptureInboundMetaSentinelLine(line: string): boolean {
+  const trimmed = line.trim();
+  return AUTO_CAPTURE_INBOUND_META_SENTINELS.some((sentinel) => sentinel === trimmed);
+}
+
+function stripLeadingInboundMetadata(text: string): string {
+  if (!text || !AUTO_CAPTURE_INBOUND_META_SENTINELS.some((sentinel) => text.includes(sentinel))) {
+    return text;
+  }
+
+  const lines = text.split("\n");
+  let index = 0;
+  while (index < lines.length && lines[index].trim() === "") {
+    index++;
+  }
+
+  while (index < lines.length && isAutoCaptureInboundMetaSentinelLine(lines[index])) {
+    index++;
+    if (index < lines.length && lines[index].trim() === "```json") {
+      index++;
+      while (index < lines.length && lines[index].trim() !== "```") {
+        index++;
+      }
+      if (index < lines.length && lines[index].trim() === "```") {
+        index++;
+      }
+    } else {
+      // Sentinel line not followed by a ```json fenced block — unexpected format.
+      // Log and return original text to avoid lossy stripping.
+      _autoCaptureDebugLog(
+        `memory-lancedb-pro: stripLeadingInboundMetadata: sentinel line not followed by json fenced block at line ${index}, returning original text`,
+      );
+      return text;
+    }
+
+    while (index < lines.length && lines[index].trim() === "") {
+      index++;
+    }
+  }
+
+  return lines.slice(index).join("\n").trim();
+}
 
 /**
  * Prune a Map to stay within the given maximum number of entries.
@@ -743,6 +771,28 @@ function pruneMapIfOver<K, V>(map: Map<K, V>, maxEntries: number): void {
     const key = iter.next().value;
     if (key !== undefined) map.delete(key);
   }
+}
+
+function stripAutoCaptureSessionResetPrefix(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith(AUTO_CAPTURE_SESSION_RESET_PREFIX)) {
+    return trimmed;
+  }
+
+  const blankLineIndex = trimmed.indexOf("\n\n");
+  if (blankLineIndex >= 0) {
+    return trimmed.slice(blankLineIndex + 2).trim();
+  }
+
+  const lines = trimmed.split("\n");
+  if (lines.length <= 2) {
+    return "";
+  }
+  return lines.slice(2).join("\n").trim();
+}
+
+function stripAutoCaptureAddressingPrefix(text: string): string {
+  return text.replace(AUTO_CAPTURE_ADDRESSING_PREFIX_RE, "").trim();
 }
 
 function isExplicitRememberCommand(text: string): boolean {
@@ -772,6 +822,34 @@ function buildAutoCaptureConversationKeyFromSessionKey(sessionKey: string): stri
   const match = /^agent:[^:]+:(.+)$/.exec(trimmed);
   const suffix = match?.[1]?.trim();
   return suffix || null;
+}
+
+function stripAutoCaptureInjectedPrefix(role: string, text: string): string {
+  if (role !== "user") {
+    return text.trim();
+  }
+
+  let normalized = text.trim();
+  normalized = normalized.replace(/^<relevant-memories>\s*[\s\S]*?<\/relevant-memories>\s*/i, "");
+  normalized = normalized.replace(
+    /^\[UNTRUSTED DATA[^\n]*\][\s\S]*?\[END UNTRUSTED DATA\]\s*/i,
+    "",
+  );
+  normalized = stripAutoCaptureSessionResetPrefix(normalized);
+  normalized = stripLeadingInboundMetadata(normalized);
+  normalized = stripAutoCaptureAddressingPrefix(normalized);
+  return normalized.trim();
+}
+
+/** Module-level debug logger for auto-capture helpers; set during plugin registration. */
+let _autoCaptureDebugLog: (msg: string) => void = () => { };
+
+function normalizeAutoCaptureText(role: unknown, text: string): string | null {
+  if (typeof role !== "string") return null;
+  const normalized = stripAutoCaptureInjectedPrefix(role, text);
+  if (!normalized) return null;
+  if (shouldSkipReflectionMessage(role, normalized)) return null;
+  return normalized;
 }
 
 function redactSecrets(text: string): string {
@@ -1577,6 +1655,8 @@ const pluginVersion = getPluginVersion();
 // Plugin Definition
 // ============================================================================
 
+let _initialized = false;
+
 const memoryLanceDBProPlugin = {
   id: "memory-lancedb-pro",
   name: "Memory (LanceDB Pro)",
@@ -1585,8 +1665,25 @@ const memoryLanceDBProPlugin = {
   kind: "memory" as const,
 
   register(api: OpenClawPluginApi) {
+
+    // Idempotent guard: skip re-init on repeated register() calls
+    if (_initialized) {
+      api.logger.debug("memory-lancedb-pro: register() called again — skipping re-init (idempotent)");
+      return;
+    }
+    _initialized = true;
+
     // Parse and validate configuration
     const config = parsePluginConfig(api.pluginConfig);
+
+    // Dual-memory model warning: help users understand the two-layer architecture
+    api.logger.info(
+      `[memory-lancedb-pro] memory_recall queries the plugin store (LanceDB), not MEMORY.md.\n` +
+      `  - Plugin memory (LanceDB) = primary recall source for semantic search\n` +
+      `  - MEMORY.md / memory/YYYY-MM-DD.md = startup context / journal only\n` +
+      `  - Use memory_store or auto-capture for recallable memories.\n` +
+      `  - Run: npx memory-lancedb-pro memory-pro import-markdown to migrate Markdown memories.`,
+    );
 
     const resolvedDbPath = api.resolvePath(config.dbPath || getDefaultDbPath());
 
@@ -1614,7 +1711,6 @@ const memoryLanceDBProPlugin = {
       model: config.embedding.model || "text-embedding-3-small",
       baseURL: config.embedding.baseURL,
       dimensions: config.embedding.dimensions,
-      omitDimensions: config.embedding.omitDimensions,
       taskQuery: config.embedding.taskQuery,
       taskPassage: config.embedding.taskPassage,
       normalized: config.embedding.normalized,
@@ -1722,12 +1818,6 @@ const memoryLanceDBProPlugin = {
         api.logger.warn(`memory-lancedb-pro: smart extraction init failed, falling back to regex: ${String(err)}`);
       }
     }
-
-    // Extraction rate limiter (Feature 7: Adaptive Extraction Throttling)
-    // NOTE: This rate limiter is global — shared across all agents in multi-agent setups.
-    const extractionRateLimiter = createExtractionRateLimiter({
-      maxExtractionsPerHour: config.extractionThrottle?.maxExtractionsPerHour,
-    });
 
     async function sleep(ms: number): Promise<void> {
       await new Promise(resolve => setTimeout(resolve, ms));
@@ -1955,6 +2045,9 @@ const memoryLanceDBProPlugin = {
     const autoCapturePendingIngressTexts = new Map<string, string[]>();
     const autoCaptureRecentTexts = new Map<string, string[]>();
 
+    // Wire up the module-level debug logger for pure helper functions.
+    _autoCaptureDebugLog = (msg: string) => api.logger.debug(msg);
+
     api.logger.info(
       `memory-lancedb-pro@${pluginVersion}: plugin registered (db: ${resolvedDbPath}, model: ${config.embedding.model || "text-embedding-3-small"}, smartExtraction: ${smartExtractor ? 'ON' : 'OFF'})`
     );
@@ -1965,7 +2058,7 @@ const memoryLanceDBProPlugin = {
         ctx.channelId,
         ctx.conversationId,
       );
-      const normalized = normalizeAutoCaptureText("user", event.content, shouldSkipReflectionMessage);
+      const normalized = normalizeAutoCaptureText("user", event.content);
       if (conversationKey && normalized) {
         const queue = autoCapturePendingIngressTexts.get(conversationKey) || [];
         queue.push(normalized);
@@ -2020,128 +2113,6 @@ const memoryLanceDBProPlugin = {
     );
 
     // ========================================================================
-    // Memory Compaction (Progressive Summarization)
-    // ========================================================================
-
-    if (config.enableManagementTools) {
-      api.registerTool({
-        name: "memory_compact",
-        description:
-          "Consolidate semantically similar old memories into refined single entries " +
-          "(progressive summarization). Reduces noise and improves retrieval quality over time. " +
-          "Use dry_run:true first to preview the compaction plan without making changes.",
-        inputSchema: {
-          type: "object" as const,
-          properties: {
-            dry_run: {
-              type: "boolean",
-              description: "Preview clusters without writing changes. Default: false.",
-            },
-            min_age_days: {
-              type: "number",
-              description: "Only compact memories at least this many days old. Default: 7.",
-            },
-            similarity_threshold: {
-              type: "number",
-              description: "Cosine similarity threshold for clustering [0-1]. Default: 0.88.",
-            },
-            scopes: {
-              type: "array",
-              items: { type: "string" },
-              description: "Scope filter. Omit to compact all scopes.",
-            },
-          },
-          required: [],
-        },
-        execute: async (args: Record<string, unknown>) => {
-          const compactionCfg: CompactionConfig = {
-            enabled: true,
-            minAgeDays:
-              typeof args.min_age_days === "number"
-                ? args.min_age_days
-                : (config.memoryCompaction?.minAgeDays ?? 7),
-            similarityThreshold:
-              typeof args.similarity_threshold === "number"
-                ? Math.max(0, Math.min(1, args.similarity_threshold))
-                : (config.memoryCompaction?.similarityThreshold ?? 0.88),
-            minClusterSize: config.memoryCompaction?.minClusterSize ?? 2,
-            maxMemoriesToScan: config.memoryCompaction?.maxMemoriesToScan ?? 200,
-            dryRun: args.dry_run === true,
-            cooldownHours: config.memoryCompaction?.cooldownHours ?? 24,
-          };
-          const scopes =
-            Array.isArray(args.scopes) && args.scopes.length > 0
-              ? (args.scopes as string[])
-              : undefined;
-
-          const result = await runCompaction(
-            store,
-            embedder,
-            compactionCfg,
-            scopes,
-            api.logger,
-          );
-
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(
-                  {
-                    scanned: result.scanned,
-                    clustersFound: result.clustersFound,
-                    memoriesDeleted: result.memoriesDeleted,
-                    memoriesCreated: result.memoriesCreated,
-                    dryRun: result.dryRun,
-                    summary: result.dryRun
-                      ? `Dry run: found ${result.clustersFound} cluster(s) in ${result.scanned} memories — no changes made.`
-                      : `Compacted ${result.memoriesDeleted} memories into ${result.memoriesCreated} consolidated entries.`,
-                  },
-                  null,
-                  2,
-                ),
-              },
-            ],
-          };
-        },
-      });
-    }
-
-    // Auto-compaction at gateway_start (if enabled, respects cooldown)
-    if (config.memoryCompaction?.enabled) {
-      api.on("gateway_start", () => {
-        const compactionStateFile = join(
-          dirname(resolvedDbPath),
-          ".compaction-state.json",
-        );
-        const compactionCfg: CompactionConfig = {
-          enabled: true,
-          minAgeDays: config.memoryCompaction!.minAgeDays ?? 7,
-          similarityThreshold: config.memoryCompaction!.similarityThreshold ?? 0.88,
-          minClusterSize: config.memoryCompaction!.minClusterSize ?? 2,
-          maxMemoriesToScan: config.memoryCompaction!.maxMemoriesToScan ?? 200,
-          dryRun: false,
-          cooldownHours: config.memoryCompaction!.cooldownHours ?? 24,
-        };
-
-        shouldRunCompaction(compactionStateFile, compactionCfg.cooldownHours)
-          .then(async (should) => {
-            if (!should) return;
-            await recordCompactionRun(compactionStateFile);
-            const result = await runCompaction(store, embedder, compactionCfg, undefined, api.logger);
-            if (result.clustersFound > 0) {
-              api.logger.info(
-                `memory-compactor [auto]: compacted ${result.memoriesDeleted} → ${result.memoriesCreated} entries`,
-              );
-            }
-          })
-          .catch((err) => {
-            api.logger.warn(`memory-compactor [auto]: failed: ${String(err)}`);
-          });
-      });
-    }
-
-    // ========================================================================
     // Register CLI Commands
     // ========================================================================
 
@@ -2194,9 +2165,7 @@ const memoryLanceDBProPlugin = {
 
     // Auto-recall: inject relevant memories before agent starts
     // Default is OFF to prevent the model from accidentally echoing injected context.
-    // recallMode: "full" (default when autoRecall=true) | "summary" (L0 only) | "adaptive" (intent-based) | "off"
-    const recallMode = config.recallMode || "full";
-    if (config.autoRecall === true && recallMode !== "off") {
+    if (config.autoRecall === true) {
       // Cache the most recent raw user message per session so the
       // before_prompt_build gating can check the *user* text, not the full
       // assembled prompt (which includes system instructions and is too long
@@ -2213,7 +2182,7 @@ const memoryLanceDBProPlugin = {
         if (text) lastRawUserMessage.set(cacheKey, text);
       });
 
-      const AUTO_RECALL_TIMEOUT_MS = parsePositiveInt(config.autoRecallTimeoutMs) ?? 5_000; // configurable; default raised from 3s to 5s for remote embedding APIs behind proxies
+      const AUTO_RECALL_TIMEOUT_MS = config.autoRecallTimeoutMs ?? 3_000; // bounded timeout to prevent agent startup stall
       api.on("before_prompt_build", async (event: any, ctx: any) => {
         // Manually increment turn counter for this session
         const sessionId = ctx?.sessionId || "default";
@@ -2260,14 +2229,6 @@ const memoryLanceDBProPlugin = {
           const autoRecallPerItemMaxChars = clampInt(config.autoRecallPerItemMaxChars ?? 180, 32, 1000);
           const retrieveLimit = clampInt(Math.max(autoRecallMaxItems * 2, autoRecallMaxItems), 1, 20);
 
-          // Adaptive intent analysis (zero-LLM-cost pattern matching)
-          const intent = recallMode === "adaptive" ? analyzeIntent(recallQuery) : undefined;
-          if (intent) {
-            api.logger.debug?.(
-              `memory-lancedb-pro: adaptive recall intent=${intent.label} depth=${intent.depth} confidence=${intent.confidence} categories=[${intent.categories.join(",")}]`,
-            );
-          }
-
           const results = filterUserMdExclusiveRecallResults(await retrieveWithRetry({
             query: recallQuery,
             limit: retrieveLimit,
@@ -2279,19 +2240,16 @@ const memoryLanceDBProPlugin = {
             return;
           }
 
-          // Apply intent-based category boost for adaptive mode
-          const rankedResults = intent ? applyCategoryBoost(results, intent) : results;
-
           // Filter out redundant memories based on session history
           const minRepeated = config.autoRecallMinRepeated ?? 8;
           let dedupFilteredCount = 0;
 
           // Only enable dedup logic when minRepeated > 0
-          let finalResults = rankedResults;
+          let finalResults = results;
 
           if (minRepeated > 0) {
             const sessionHistory = recallHistory.get(sessionId) || new Map<string, number>();
-            const filteredResults = rankedResults.filter((r) => {
+            const filteredResults = results.filter((r) => {
               const lastTurn = sessionHistory.get(r.entry.id) ?? -999;
               const diff = currentTurn - lastTurn;
               const isRedundant = diff < minRepeated;
@@ -2323,10 +2281,12 @@ const memoryLanceDBProPlugin = {
             const meta = parseSmartMetadata(r.entry.metadata, r.entry);
             if (meta.state !== "confirmed") {
               stateFilteredCount++;
+              api.logger.debug(`memory-lancedb-pro: governance: filtered id=${r.entry.id} reason=state(${meta.state}) score=${r.score?.toFixed(3)} text=${r.entry.text.slice(0, 50)}`);
               return false;
             }
             if (meta.memory_layer === "archive" || meta.memory_layer === "reflection") {
               stateFilteredCount++;
+              api.logger.debug(`memory-lancedb-pro: governance: filtered id=${r.entry.id} reason=layer(${meta.memory_layer}) score=${r.score?.toFixed(3)} text=${r.entry.text.slice(0, 50)}`);
               return false;
             }
             if (meta.suppressed_until_turn > 0 && currentTurn <= meta.suppressed_until_turn) {
@@ -2343,30 +2303,13 @@ const memoryLanceDBProPlugin = {
             return;
           }
 
-          // Determine effective per-item char limit based on recall mode and intent depth
-          const effectivePerItemMaxChars = (() => {
-            if (recallMode === "summary") return Math.min(autoRecallPerItemMaxChars, 80); // L0 only
-            if (!intent) return autoRecallPerItemMaxChars; // "full" mode
-            // Adaptive mode: depth determines char budget
-            switch (intent.depth) {
-              case "l0": return Math.min(autoRecallPerItemMaxChars, 80);
-              case "l1": return autoRecallPerItemMaxChars; // default budget
-              case "full": return Math.min(autoRecallPerItemMaxChars * 3, 1000);
-            }
-          })();
-
           const preBudgetCandidates = governanceEligible.map((r) => {
             const metaObj = parseSmartMetadata(r.entry.metadata, r.entry);
             const displayCategory = metaObj.memory_category || r.entry.category;
             const displayTier = metaObj.tier || "";
             const tierPrefix = displayTier ? `[${displayTier.charAt(0).toUpperCase()}]` : "";
-            // Select content tier based on recallMode/intent depth
-            const contentText = recallMode === "summary"
-              ? (metaObj.l0_abstract || r.entry.text)
-              : intent?.depth === "full"
-                ? (r.entry.text) // full text for deep queries
-                : (metaObj.l0_abstract || r.entry.text); // L0/L1 default
-            const summary = sanitizeForContext(contentText).slice(0, effectivePerItemMaxChars);
+            const abstract = metaObj.l0_abstract || r.entry.text;
+            const summary = sanitizeForContext(abstract).slice(0, autoRecallPerItemMaxChars);
             return {
               id: r.entry.id,
               prefix: `${tierPrefix}[${displayCategory}:${r.entry.scope}]`,
@@ -2516,14 +2459,6 @@ const memoryLanceDBProPlugin = {
         // See: https://github.com/CortexReach/memory-lancedb-pro/issues/260
         const backgroundRun = (async () => {
         try {
-          // Feature 7: Check extraction rate limit before any work
-          if (extractionRateLimiter.isRateLimited()) {
-            api.logger.debug(
-              `memory-lancedb-pro: auto-capture skipped (rate limited: ${extractionRateLimiter.getRecentCount()} extractions in last hour)`,
-            );
-            return;
-          }
-
           // Determine agent ID and default scope
           const agentId = resolveHookAgentId(ctx?.agentId, (event as any).sessionKey);
           const accessibleScopes = resolveScopeFilter(scopeManager, agentId);
@@ -2557,7 +2492,7 @@ const memoryLanceDBProPlugin = {
             const content = msgObj.content;
 
             if (typeof content === "string") {
-              const normalized = normalizeAutoCaptureText(role, content, shouldSkipReflectionMessage);
+              const normalized = normalizeAutoCaptureText(role, content);
               if (!normalized) {
                 skippedAutoCaptureTexts++;
               } else {
@@ -2577,7 +2512,7 @@ const memoryLanceDBProPlugin = {
                   typeof (block as Record<string, unknown>).text === "string"
                 ) {
                   const text = (block as Record<string, unknown>).text as string;
-                  const normalized = normalizeAutoCaptureText(role, text, shouldSkipReflectionMessage);
+                  const normalized = normalizeAutoCaptureText(role, text);
                   if (!normalized) {
                     skippedAutoCaptureTexts++;
                   } else {
@@ -2653,38 +2588,7 @@ const memoryLanceDBProPlugin = {
           }
 
           // ----------------------------------------------------------------
-          // Feature 7: Skip low-value conversations
-          // ----------------------------------------------------------------
-          if (config.extractionThrottle?.skipLowValue === true) {
-            const conversationValue = estimateConversationValue(texts);
-            if (conversationValue < 0.2) {
-              api.logger.debug(
-                `memory-lancedb-pro: auto-capture skipped for agent ${agentId} (low conversation value: ${conversationValue.toFixed(2)})`,
-              );
-              return;
-            }
-          }
-
-          // ----------------------------------------------------------------
-          // Feature 1: Session compression — prioritize high-signal texts
-          // ----------------------------------------------------------------
-          if (config.sessionCompression?.enabled === true && texts.length > 0) {
-            const maxChars = config.extractMaxChars ?? 8000;
-            const compressed = compressTexts(texts, maxChars, {
-              minScoreToKeep: config.sessionCompression?.minScoreToKeep,
-            });
-            if (compressed.dropped > 0) {
-              api.logger.debug(
-                `memory-lancedb-pro: session compression for agent ${agentId}: dropped ${compressed.dropped}/${texts.length} texts (${compressed.totalChars} chars kept)`,
-              );
-              texts = compressed.texts;
-            }
-          }
-
-          // ----------------------------------------------------------------
           // Smart Extraction (Phase 1: LLM-powered 6-category extraction)
-          // Rate limiter charged AFTER successful extraction, not before,
-          // so no-op sessions don't consume the hourly quota.
           // ----------------------------------------------------------------
           if (smartExtractor) {
             // Pre-filter: embedding-based noise detection (language-agnostic)
@@ -2704,8 +2608,6 @@ const memoryLanceDBProPlugin = {
                 conversationText, sessionKey,
                 { scope: defaultScope, scopeFilter: accessibleScopes },
               );
-              // Charge rate limiter only after successful extraction
-              extractionRateLimiter.recordExtraction();
               if (stats.created > 0 || stats.merged > 0) {
                 api.logger.info(
                   `memory-lancedb-pro: smart-extracted ${stats.created} created, ${stats.merged} merged, ${stats.skipped} skipped for agent ${agentId}`
@@ -2802,7 +2704,7 @@ const memoryLanceDBProPlugin = {
                     l2_content: text,
                     source_session: (event as any).sessionKey || "unknown",
                     source: "auto-capture",
-                    state: "pending",
+                    state: "confirmed",
                     memory_layer: "working",
                     injected_count: 0,
                     bad_recall_count: 0,
@@ -3736,10 +3638,6 @@ export function parsePluginConfig(value: unknown): PluginConfig {
       // Accept number, numeric string, or env-var string (e.g. "${EMBED_DIM}").
       // Also accept legacy top-level `dimensions` for convenience.
       dimensions: parsePositiveInt(embedding.dimensions ?? cfg.dimensions),
-      omitDimensions:
-        typeof embedding.omitDimensions === "boolean"
-          ? embedding.omitDimensions
-          : undefined,
       taskQuery:
         typeof embedding.taskQuery === "string"
           ? embedding.taskQuery
@@ -3766,6 +3664,7 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     autoRecallMaxItems: parsePositiveInt(cfg.autoRecallMaxItems) ?? 3,
     autoRecallMaxChars: parsePositiveInt(cfg.autoRecallMaxChars) ?? 600,
     autoRecallPerItemMaxChars: parsePositiveInt(cfg.autoRecallPerItemMaxChars) ?? 180,
+    autoRecallTimeoutMs: parsePositiveInt(cfg.autoRecallTimeoutMs) ?? 3000,
     captureAssistant: cfg.captureAssistant === true,
     retrieval: typeof cfg.retrieval === "object" && cfg.retrieval !== null ? cfg.retrieval as any : undefined,
     decay: typeof cfg.decay === "object" && cfg.decay !== null ? cfg.decay as any : undefined,
@@ -3861,47 +3760,9 @@ export function parsePluginConfig(value: unknown): PluginConfig {
         }
         : undefined,
     admissionControl: normalizeAdmissionControlConfig(cfg.admissionControl),
-    memoryCompaction: (() => {
-      const raw =
-        typeof cfg.memoryCompaction === "object" && cfg.memoryCompaction !== null
-          ? (cfg.memoryCompaction as Record<string, unknown>)
-          : null;
-      if (!raw) return undefined;
-      return {
-        enabled: raw.enabled === true,
-        minAgeDays: parsePositiveInt(raw.minAgeDays) ?? 7,
-        similarityThreshold:
-          typeof raw.similarityThreshold === "number"
-            ? Math.max(0, Math.min(1, raw.similarityThreshold))
-            : 0.88,
-        minClusterSize: parsePositiveInt(raw.minClusterSize) ?? 2,
-        maxMemoriesToScan: parsePositiveInt(raw.maxMemoriesToScan) ?? 200,
-        cooldownHours: parsePositiveInt(raw.cooldownHours) ?? 24,
-      };
-    })(),
-    sessionCompression:
-      typeof cfg.sessionCompression === "object" && cfg.sessionCompression !== null
-        ? {
-            enabled:
-              (cfg.sessionCompression as Record<string, unknown>).enabled === true,
-            minScoreToKeep:
-              typeof (cfg.sessionCompression as Record<string, unknown>).minScoreToKeep === "number"
-                ? ((cfg.sessionCompression as Record<string, unknown>).minScoreToKeep as number)
-                : 0.3,
-          }
-        : { enabled: false, minScoreToKeep: 0.3 },
-    extractionThrottle:
-      typeof cfg.extractionThrottle === "object" && cfg.extractionThrottle !== null
-        ? {
-            skipLowValue:
-              (cfg.extractionThrottle as Record<string, unknown>).skipLowValue === true,
-            maxExtractionsPerHour:
-              typeof (cfg.extractionThrottle as Record<string, unknown>).maxExtractionsPerHour === "number"
-                ? ((cfg.extractionThrottle as Record<string, unknown>).maxExtractionsPerHour as number)
-                : 30,
-          }
-        : { skipLowValue: false, maxExtractionsPerHour: 30 },
   };
 }
+
+export function _resetInitialized() { _initialized = false; }
 
 export default memoryLanceDBProPlugin;
