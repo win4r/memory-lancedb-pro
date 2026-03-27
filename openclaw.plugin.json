@@ -46,10 +46,6 @@
             "type": "integer",
             "minimum": 1
           },
-          "omitDimensions": {
-            "type": "boolean",
-            "description": "When true, omit the dimensions parameter from embedding requests even if dimensions is configured"
-          },
           "taskQuery": {
             "type": "string",
             "description": "Embedding task for queries (provider-specific, e.g. Jina: retrieval.query)"
@@ -136,12 +132,6 @@
         "maximum": 1000,
         "default": 180,
         "description": "Maximum character budget per auto-injected memory summary."
-      },
-      "recallMode": {
-        "type": "string",
-        "enum": ["full", "summary", "adaptive", "off"],
-        "default": "full",
-        "description": "Auto-recall depth mode. 'full': inject with configured per-item budget. 'summary': L0 abstracts only (compact). 'adaptive': analyze query intent to auto-select category and depth. 'off': disable auto-recall injection."
       },
       "captureAssistant": {
         "type": "boolean"
@@ -238,23 +228,78 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "utility": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.1 },
-              "confidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.1 },
-              "novelty": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.1 },
-              "recency": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.1 },
-              "typePrior": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.6 }
+              "utility": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.1
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.1
+              },
+              "novelty": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.1
+              },
+              "recency": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.1
+              },
+              "typePrior": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.6
+              }
             }
           },
           "typePriors": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "profile": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.95 },
-              "preferences": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.9 },
-              "entities": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.75 },
-              "events": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.45 },
-              "cases": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.8 },
-              "patterns": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.85 }
+              "profile": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.95
+              },
+              "preferences": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.9
+              },
+              "entities": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.75
+              },
+              "events": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.45
+              },
+              "cases": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.8
+              },
+              "patterns": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.85
+              }
             }
           }
         }
@@ -324,6 +369,11 @@
             ],
             "default": "jina",
             "description": "Reranker provider format. Determines request/response shape and auth header. Use tei for Hugging Face Text Embeddings Inference /rerank endpoints. DashScope uses gte-rerank-v2 with endpoint https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank."
+          },
+          "rerankTimeoutMs": {
+            "type": "number",
+            "default": 5000,
+            "description": "Rerank API timeout in milliseconds. Increase for local/CPU-based rerank servers (e.g., 120000 for 2 minutes)."
           },
           "candidatePoolSize": {
             "type": "integer",
@@ -745,86 +795,12 @@
           }
         }
       },
-      "memoryCompaction": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "Progressive summarization: periodically consolidate semantically similar old memories into refined single entries, reducing noise and improving retrieval quality over time.",
-        "properties": {
-          "enabled": {
-            "type": "boolean",
-            "default": false,
-            "description": "Enable automatic compaction at gateway startup (respects cooldownHours)"
-          },
-          "minAgeDays": {
-            "type": "integer",
-            "default": 7,
-            "minimum": 1,
-            "description": "Only compact memories at least this many days old"
-          },
-          "similarityThreshold": {
-            "type": "number",
-            "default": 0.88,
-            "minimum": 0,
-            "maximum": 1,
-            "description": "Cosine similarity threshold for clustering. Higher = more conservative merges."
-          },
-          "minClusterSize": {
-            "type": "integer",
-            "default": 2,
-            "minimum": 2,
-            "description": "Minimum cluster size required to trigger a merge"
-          },
-          "maxMemoriesToScan": {
-            "type": "integer",
-            "default": 200,
-            "minimum": 1,
-            "description": "Maximum number of memories to scan per compaction run"
-          },
-          "cooldownHours": {
-            "type": "integer",
-            "default": 24,
-            "minimum": 1,
-            "description": "Minimum hours between automatic compaction runs"
-          }
-        }
-      },
-      "sessionCompression": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "Session compression settings for auto-capture. Scores and compresses conversation texts to prioritize high-signal content.",
-        "properties": {
-          "enabled": {
-            "type": "boolean",
-            "default": false,
-            "description": "Enable session compression before auto-capture extraction"
-          },
-          "minScoreToKeep": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "default": 0.3,
-            "description": "Minimum score threshold. If all texts score below this, fallback to keeping at least the last few texts."
-          }
-        }
-      },
-      "extractionThrottle": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "Adaptive extraction throttling to reduce LLM cost on low-value or rapid-fire sessions.",
-        "properties": {
-          "skipLowValue": {
-            "type": "boolean",
-            "default": false,
-            "description": "Skip extraction for conversations with estimated value < 0.2"
-          },
-          "maxExtractionsPerHour": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 200,
-            "default": 30,
-            "description": "Maximum number of auto-capture extractions allowed per hour"
-          }
-        }
+      "autoRecallTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 120000,
+        "default": 3000,
+        "description": "Timeout in ms for auto-recall search before skipping injection. Prevents agent startup stall when embedding/rerank is slow."
       }
     },
     "required": [
@@ -853,11 +829,6 @@
       "label": "Vector Dimensions",
       "placeholder": "auto-detected from model",
       "help": "Override vector dimensions for custom models not in the built-in lookup table",
-      "advanced": true
-    },
-    "embedding.omitDimensions": {
-      "label": "Omit Request Dimensions",
-      "help": "Do not send the dimensions parameter to the embedding API even if embedding.dimensions is configured. Useful for local models like Qwen3-Embedding that reject the field.",
       "advanced": true
     },
     "embedding.taskQuery": {
@@ -1011,11 +982,6 @@
       "label": "Auto-Recall Per-Item Max Chars",
       "help": "Maximum characters per injected memory summary.",
       "advanced": true
-    },
-    "recallMode": {
-      "label": "Recall Mode",
-      "help": "Auto-recall depth: full (default), summary (L0 only), adaptive (intent-based category routing), off.",
-      "advanced": false
     },
     "captureAssistant": {
       "label": "Capture Assistant Messages",
@@ -1297,43 +1263,6 @@
       "label": "LLM Timeout (ms)",
       "placeholder": "30000",
       "help": "Request timeout for the smart-extraction / upgrade LLM in milliseconds",
-      "advanced": true
-    },
-    "memoryCompaction.enabled": {
-      "label": "Auto Compaction",
-      "help": "Automatically consolidate similar old memories at gateway startup. Also available on-demand via the memory_compact tool (requires enableManagementTools)."
-    },
-    "memoryCompaction.minAgeDays": {
-      "label": "Min Age (days)",
-      "help": "Memories younger than this are never touched by compaction",
-      "advanced": true
-    },
-    "memoryCompaction.similarityThreshold": {
-      "label": "Similarity Threshold",
-      "help": "How similar two memories must be to merge (0–1). 0.88 is a good starting point; raise to 0.92+ for conservative merges.",
-      "advanced": true
-    },
-    "memoryCompaction.cooldownHours": {
-      "label": "Cooldown (hours)",
-      "help": "Minimum gap between automatic compaction runs",
-      "advanced": true
-    },
-    "sessionCompression.enabled": {
-      "label": "Session Compression",
-      "help": "Score and compress conversation texts before auto-capture to prioritize high-signal content (corrections, decisions, tool calls)"
-    },
-    "sessionCompression.minScoreToKeep": {
-      "label": "Compression Min Score",
-      "help": "Minimum text score threshold. If all texts score below this, keep at least the last few texts as fallback.",
-      "advanced": true
-    },
-    "extractionThrottle.skipLowValue": {
-      "label": "Skip Low-Value Conversations",
-      "help": "Skip auto-capture for conversations estimated to have low memory value (< 0.2)"
-    },
-    "extractionThrottle.maxExtractionsPerHour": {
-      "label": "Max Extractions Per Hour",
-      "help": "Rate limit for auto-capture extractions. Prevents excessive LLM calls during rapid-fire sessions.",
       "advanced": true
     }
   }
