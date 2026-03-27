@@ -1671,7 +1671,6 @@ const memoryLanceDBProPlugin = {
       api.logger.debug("memory-lancedb-pro: register() called again — skipping re-init (idempotent)");
       return;
     }
-    _initialized = true;
 
     // Parse and validate configuration
     const config = parsePluginConfig(api.pluginConfig);
@@ -1711,6 +1710,7 @@ const memoryLanceDBProPlugin = {
       model: config.embedding.model || "text-embedding-3-small",
       baseURL: config.embedding.baseURL,
       dimensions: config.embedding.dimensions,
+      omitDimensions: config.embedding.omitDimensions,
       taskQuery: config.embedding.taskQuery,
       taskPassage: config.embedding.taskPassage,
       normalized: config.embedding.normalized,
@@ -2165,7 +2165,8 @@ const memoryLanceDBProPlugin = {
 
     // Auto-recall: inject relevant memories before agent starts
     // Default is OFF to prevent the model from accidentally echoing injected context.
-    if (config.autoRecall === true) {
+    const recallMode = config.recallMode || "full";
+    if (config.autoRecall === true && recallMode !== "off") {
       // Cache the most recent raw user message per session so the
       // before_prompt_build gating can check the *user* text, not the full
       // assembled prompt (which includes system instructions and is too long
@@ -3542,6 +3543,10 @@ const memoryLanceDBProPlugin = {
         // Run initial backup after a short delay, then schedule daily
         setTimeout(() => void runBackup(), 60_000); // 1 min after start
         backupTimer = setInterval(() => void runBackup(), BACKUP_INTERVAL_MS);
+
+        // Mark init complete ONLY after all setup succeeds — so any error during
+        // init leaves the plugin recoverable (can retry on next register() call).
+        _initialized = true;
       },
       stop: async () => {
         if (backupTimer) {
