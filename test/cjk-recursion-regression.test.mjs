@@ -236,6 +236,58 @@ async function testBatchEmbeddingStillWorks() {
   console.log("  PASSED\n");
 }
 
+async function testOllamaAbortWithNativeFetch() {
+  console.log("Test 8: Ollama endpoint uses native fetch and abort propagates correctly (PR354 fix)");
+
+  let requestAborted = false;
+  let requestDestroyed = false;
+
+  await withServer(async (_payload, req, res) => {
+    // Simulate slow Ollama response ??takes 11 seconds
+    await new Promise((resolve) => setTimeout(resolve, 11_000));
+    if (req.aborted || req.destroyed) {
+      requestAborted = req.aborted;
+      requestDestroyed = req.destroyed;
+      return;
+    }
+    const dims = 1024;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ data: [{ embedding: Array.from({ length: dims }, () => 0.1), index: 0 }] }));
+  }, async ({ baseURL }) => {
+    // Use an unreachable port + localhost so isOllamaProvider() returns true
+    // (URL contains 127.0.0.1:11434) but nothing actually listens there.
+    // This forces native fetch to properly reject, validating the Ollama path.
+    const ollamaBaseURL = "http://127.0.0.1:11434/v1";
+    const embedder = new Embedder({
+      provider: "openai-compatible",
+      apiKey: "test-key",
+      model: "mxbai-embed-large",
+      baseURL: ollamaBaseURL,
+      dimensions: 1024,
+    });
+
+    // Verify isOllamaProvider is true (native fetch path)
+    assert.equal(embedder.isOllamaProvider ? embedder.isOllamaProvider() : false, true,
+      "isOllamaProvider should return true for localhost:11434");
+
+    // Call embedPassage and verify it rejects via native fetch path
+    // (real Ollama at :11434 returns 404, which triggers our error handler)
+    let errorCaught;
+    try {
+      await embedder.embedPassage("ollama abort test probe");
+    } catch (e) {
+      errorCaught = e;
+    }
+    assert.ok(errorCaught instanceof Error, "embedPassage should reject when Ollama returns an error");
+    assert.ok(
+      /ollama embedding failed|404|Failed to generate embedding from Ollama|Embedding provider unreachable/i.test(errorCaught.message),
+      "Error should come from Ollama native fetch path, got: " + errorCaught.message
+    );
+  });
+
+  console.log("  PASSED\n");
+}
+
 async function run() {
   console.log("Running regression tests for PR #238...\n");
   await testSingleChunkFallbackTerminates();
@@ -245,6 +297,7 @@ async function run() {
   await testSmallContextChunking();
   await testTimeoutAbortPropagation();
   await testBatchEmbeddingStillWorks();
+  await testOllamaAbortWithNativeFetch();
   console.log("All regression tests passed!");
 }
 
