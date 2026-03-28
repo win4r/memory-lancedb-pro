@@ -72,6 +72,10 @@ for (const key of [
 }
 
 assert.ok(
+  Object.prototype.hasOwnProperty.call(manifest.configSchema.properties.llm.properties, "api"),
+  "configSchema should declare llm.api",
+);
+assert.ok(
   Object.prototype.hasOwnProperty.call(manifest.configSchema.properties.llm.properties, "auth"),
   "configSchema should declare llm.auth",
 );
@@ -82,6 +86,10 @@ assert.ok(
 assert.ok(
   Object.prototype.hasOwnProperty.call(manifest.configSchema.properties.llm.properties, "oauthProvider"),
   "configSchema should declare llm.oauthProvider",
+);
+assert.ok(
+  Object.prototype.hasOwnProperty.call(manifest.configSchema.properties.llm.properties, "anthropicVersion"),
+  "configSchema should declare llm.anthropicVersion",
 );
 
 assert.equal(
@@ -149,7 +157,7 @@ try {
     },
     { services },
   );
-  plugin.register(api);
+  await await plugin.register(api);
   assert.equal(services.length, 1, "plugin should register its background service");
   assert.equal(typeof api.hooks.agent_end, "function", "autoCapture should remain enabled by default");
   assert.equal(api.hooks["command:new"], undefined, "sessionMemory should stay disabled by default");
@@ -171,7 +179,7 @@ try {
       dimensions: 1536,
     },
   });
-  plugin.register(sessionDefaultApi);
+  await plugin.register(sessionDefaultApi);
   assert.equal(
     sessionDefaultApi.hooks["command:new"],
     undefined,
@@ -191,7 +199,7 @@ try {
       dimensions: 1536,
     },
   });
-  plugin.register(sessionEnabledApi);
+  await plugin.register(sessionEnabledApi);
   assert.equal(
     typeof sessionEnabledApi.hooks.before_reset,
     "function",
@@ -263,7 +271,7 @@ try {
         chunking: false,
       },
     });
-    plugin.register(chunkingOffApi);
+    await plugin.register(chunkingOffApi);
     const chunkingOffTool = chunkingOffApi.toolFactories.memory_store({
       agentId: "main",
       sessionKey: "agent:main:test",
@@ -291,7 +299,7 @@ try {
         chunking: true,
       },
     });
-    plugin.register(chunkingOnApi);
+    await plugin.register(chunkingOnApi);
     const chunkingOnTool = chunkingOnApi.toolFactories.memory_store({
       agentId: "main",
       sessionKey: "agent:main:test",
@@ -318,7 +326,7 @@ try {
         dimensions: 4,
       },
     });
-    plugin.register(withDimensionsApi);
+    await plugin.register(withDimensionsApi);
     const withDimensionsTool = withDimensionsApi.toolFactories.memory_store({
       agentId: "main",
       sessionKey: "agent:main:test",
@@ -348,7 +356,7 @@ try {
         omitDimensions: true,
       },
     });
-    plugin.register(omitDimensionsApi);
+    await plugin.register(omitDimensionsApi);
     const omitDimensionsTool = omitDimensionsApi.toolFactories.memory_store({
       agentId: "main",
       sessionKey: "agent:main:test",
