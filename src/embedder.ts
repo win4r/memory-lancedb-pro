@@ -512,11 +512,72 @@ export class Embedder {
   }
 
   /**
+   * Detect if the configured baseURL points to a local Ollama instance.
+   * Ollama's HTTP server does not properly handle AbortController signals through
+   * the OpenAI SDK's HTTP client, causing long-lived sockets that don't close
+   * when the embedding pipeline times out. For Ollama we use native fetch instead.
+   */
+  private isOllamaProvider(): boolean {
+    if (!this._baseURL) return false;
+    return /localhost:11434|127\.0\.0\.1:11434|\/ollama\b/i.test(this._baseURL);
+  }
+
+  /**
+   * Call embeddings.create using native fetch (bypasses OpenAI SDK).
+   * Used exclusively for Ollama endpoints where AbortController must work
+   * correctly to avoid long-lived stalled sockets.
+   */
+  private async embedWithNativeFetch(payload: any, signal?: AbortSignal): Promise<any> {
+    if (!this._baseURL) {
+      throw new Error("embedWithNativeFetch requires a baseURL");
+    }
+    // Ollama's embeddings endpoint is at /v1/embeddings (OpenAI-compatible)
+    const endpoint = this._baseURL.replace(/\/$/, "") + "/embeddings";
+
+    const apiKey = this.clients[0]?.apiKey ?? "ollama";
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+      signal: signal,
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`Ollama embedding failed: ${response.status} ${response.statusText} ??${body.slice(0, 200)}`);
+    }
+
+    const data = await response.json();
+    return data; // OpenAI-compatible shape: { data: [{ embedding: number[] }] }
+  }
+
+  /**
    * Call embeddings.create with automatic key rotation on rate-limit errors.
    * Tries each key in the pool at most once before giving up.
    * Accepts an optional AbortSignal to support true request cancellation.
+   *
+   * For Ollama endpoints, native fetch is used instead of the OpenAI SDK
+   * because AbortController does not reliably abort Ollama's HTTP connections
+   * through the SDK's HTTP client on Node.js.
    */
   private async embedWithRetry(payload: any, signal?: AbortSignal): Promise<any> {
+    // Use native fetch for Ollama to ensure proper AbortController support
+    if (this.isOllamaProvider()) {
+      try {
+        return await this.embedWithNativeFetch(payload, signal);
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          throw error;
+        }
+        // Ollama errors bubble up without retry (Ollama doesn't rate-limit locally)
+        throw error;
+      }
+    }
+
     const maxAttempts = this.clients.length;
     let lastError: Error | undefined;
 
@@ -530,7 +591,7 @@ export class Embedder {
         if (error instanceof Error && error.name === 'AbortError') {
           throw error;
         }
-        
+
         lastError = error instanceof Error ? error : new Error(String(error));
 
         if (this.isRateLimitError(error) && attempt < maxAttempts - 1) {
@@ -560,10 +621,30 @@ export class Embedder {
   }
 
   /** Wrap a single embedding operation with a global timeout via AbortSignal. */
-  private withTimeout<T>(promiseFactory: (signal: AbortSignal) => Promise<T>, _label: string): Promise<T> {
+  private withTimeout<T>(promiseFactory: (signal: AbortSignal) => Promise<T>, _label: string, externalSignal?: AbortSignal): Promise<T> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS);
-    return promiseFactory(controller.signal).finally(() => clearTimeout(timeoutId));
+
+    // If caller passes an external signal, merge it with the internal timeout controller.
+    // Either signal aborting will cancel the promise.
+    let unsubscribe: (() => void) | undefined;
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        clearTimeout(timeoutId);
+        return Promise.reject(externalSignal.reason ?? new Error("aborted"));
+      }
+      const handler = () => {
+        controller.abort();
+        clearTimeout(timeoutId);
+      };
+      externalSignal.addEventListener("abort", handler, { once: true });
+      unsubscribe = () => externalSignal.removeEventListener("abort", handler);
+    }
+
+    return promiseFactory(controller.signal).finally(() => {
+      clearTimeout(timeoutId);
+      unsubscribe?.();
+    });
   }
 
   // --------------------------------------------------------------------------
@@ -589,24 +670,24 @@ export class Embedder {
   // Task-aware API
   // --------------------------------------------------------------------------
 
-  async embedQuery(text: string): Promise<number[]> {
-    return this.withTimeout((signal) => this.embedSingle(text, this._taskQuery, 0, signal), "embedQuery");
+  async embedQuery(text: string, signal?: AbortSignal): Promise<number[]> {
+    return this.withTimeout((sig) => this.embedSingle(text, this._taskQuery, 0, sig), "embedQuery", signal);
   }
 
-  async embedPassage(text: string): Promise<number[]> {
-    return this.withTimeout((signal) => this.embedSingle(text, this._taskPassage, 0, signal), "embedPassage");
+  async embedPassage(text: string, signal?: AbortSignal): Promise<number[]> {
+    return this.withTimeout((sig) => this.embedSingle(text, this._taskPassage, 0, sig), "embedPassage", signal);
   }
 
   // Note: embedBatchQuery/embedBatchPassage are NOT wrapped with withTimeout because
   // they handle multiple texts in a single API call. The timeout would fire after
   // EMBED_TIMEOUT_MS regardless of how many texts succeed. Individual text embedding
   // within the batch is protected by the SDK's own timeout handling.
-  async embedBatchQuery(texts: string[]): Promise<number[][]> {
-    return this.embedMany(texts, this._taskQuery);
+  async embedBatchQuery(texts: string[], signal?: AbortSignal): Promise<number[][]> {
+    return this.embedMany(texts, this._taskQuery, signal);
   }
 
-  async embedBatchPassage(texts: string[]): Promise<number[][]> {
-    return this.embedMany(texts, this._taskPassage);
+  async embedBatchPassage(texts: string[], signal?: AbortSignal): Promise<number[][]> {
+    return this.embedMany(texts, this._taskPassage, signal);
   }
 
   // --------------------------------------------------------------------------
@@ -775,7 +856,7 @@ export class Embedder {
     }
   }
 
-  private async embedMany(texts: string[], task?: string): Promise<number[][]> {
+  private async embedMany(texts: string[], task?: string, signal?: AbortSignal): Promise<number[][]> {
     if (!texts || texts.length === 0) {
       return [];
     }
@@ -797,7 +878,8 @@ export class Embedder {
 
     try {
       const response = await this.embedWithRetry(
-        this.buildPayload(validTexts, task)
+        this.buildPayload(validTexts, task),
+        signal,
       );
 
       // Create result array with proper length
@@ -838,7 +920,7 @@ export class Embedder {
 
               // Embed all chunks in parallel, then average.
               const embeddings = await Promise.all(
-                chunkResult.chunks.map((chunk) => this.embedSingle(chunk, task))
+                chunkResult.chunks.map((chunk) => this.embedSingle(chunk, task, 0, signal))
               );
 
               const avgEmbedding = embeddings.reduce(
