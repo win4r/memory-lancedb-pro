@@ -110,6 +110,7 @@ type EmbeddingProviderProfile =
   | "azure-openai"
   | "jina"
   | "voyage-compatible"
+  | "nvidia"
   | "generic-openai-compatible";
 
 interface EmbeddingCapabilities {
@@ -210,6 +211,7 @@ function getProviderLabel(baseURL: string | undefined, model: string): string {
     if (profile === "voyage-compatible" && /api\.voyageai\.com/i.test(base)) return "Voyage";
     if (profile === "openai" && /api\.openai\.com/i.test(base)) return "OpenAI";
     if (profile === "azure-openai" || /\.openai\.azure\.com/i.test(base)) return "Azure OpenAI";
+    if (profile === "nvidia") return "NVIDIA NIM";
 
     try {
       return new URL(base).host;
@@ -226,6 +228,8 @@ function getProviderLabel(baseURL: string | undefined, model: string): string {
     case "openai":
     case "azure-openai":
       return "OpenAI";
+    case "nvidia":
+      return "NVIDIA NIM";
     default:
       return "embedding provider";
   }
@@ -236,13 +240,24 @@ function detectEmbeddingProviderProfile(
   model: string,
 ): EmbeddingProviderProfile {
   const base = baseURL || "";
+  let host = "";
+  try { host = new URL(base).hostname.toLowerCase(); } catch { /* invalid URL — skip host checks */ }
 
-  if (/api\.openai\.com/i.test(base)) return "openai";
-  if (/\.openai\.azure\.com/i.test(base)) return "azure-openai";
-  if (/api\.jina\.ai/i.test(base) || /^jina-/i.test(model)) return "jina";
-  if (/api\.voyageai\.com/i.test(base) || /^voyage\b/i.test(model)) {
-    return "voyage-compatible";
-  }
+  // Host-based detection runs first — endpoint owner semantics take precedence
+  // over model-name heuristics to avoid misclassifying e.g. a jina-xxx model
+  // served from .nvidia.com as Jina instead of NVIDIA.
+  // Match on parsed hostname to avoid false positives from proxy URLs that
+  // contain provider domains in their path or query string.
+  if (host.endsWith("api.openai.com")) return "openai";
+  if (host.endsWith(".openai.azure.com")) return "azure-openai";
+  if (host.endsWith("api.jina.ai")) return "jina";
+  if (host.endsWith("api.voyageai.com")) return "voyage-compatible";
+  if (host.endsWith(".nvidia.com") || host === "nvidia.com") return "nvidia";
+
+  // Model-prefix fallback — only when baseURL didn't match a known host
+  if (/^jina-/i.test(model)) return "jina";
+  if (/^voyage\b/i.test(model)) return "voyage-compatible";
+  if (/^nvidia\//i.test(model) || /^nv-embed/i.test(model)) return "nvidia";
 
   return "generic-openai-compatible";
 }
@@ -275,6 +290,19 @@ function getEmbeddingCapabilities(profile: EmbeddingProviderProfile): EmbeddingC
           "document": "document",
         },
         dimensionsField: "output_dimension",
+      };
+    case "nvidia":
+      return {
+        encoding_format: true,
+        normalized: false,
+        taskField: "input_type",
+        taskValueMap: {
+          "retrieval.query": "query",
+          "retrieval.passage": "passage",
+          "query": "query",
+          "passage": "passage",
+        },
+        dimensionsField: "dimensions",
       };
     case "generic-openai-compatible":
     default:
@@ -639,7 +667,11 @@ export class Embedder {
       payload.normalized = this._normalized;
     }
 
-    // Task hint: field name and optional value translation are provider-defined.
+    // Task hint: only injected when BOTH the provider profile defines a taskField
+    // AND the caller passes a task value (from user-configured taskQuery/taskPassage).
+    // This means broad provider detection (e.g. any .nvidia.com host) is safe —
+    // non-retriever models that don't expect input_type are unaffected unless the
+    // user explicitly configures task hints.
     if (this._capabilities.taskField && task) {
       const cap = this._capabilities;
       const value = cap.taskValueMap?.[task] ?? task;
