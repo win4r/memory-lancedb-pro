@@ -100,6 +100,7 @@ interface PluginConfig {
   autoRecallMaxItems?: number;
   autoRecallMaxChars?: number;
   autoRecallPerItemMaxChars?: number;
+  autoRecallExcludeAgents?: string[];
   recallMode?: "full" | "summary" | "adaptive" | "off";
   captureAssistant?: boolean;
   retrieval?: {
@@ -1586,6 +1587,9 @@ const memoryLanceDBProPlugin = {
     "Enhanced LanceDB-backed long-term memory with hybrid retrieval, multi-scope isolation, and management CLI",
   kind: "memory" as const,
 
+  // PR #365: Reset idempotent guard for testing
+  _resetInitialized() { _initialized = false; },
+
   register(api: OpenClawPluginApi) {
 
     // Idempotent guard: skip re-init on repeated register() calls
@@ -2252,6 +2256,12 @@ const memoryLanceDBProPlugin = {
           // Determine agent ID and accessible scopes
           const agentId = resolveHookAgentId(ctx?.agentId, (event as any).sessionKey);
           const accessibleScopes = resolveScopeFilter(scopeManager, agentId);
+
+          // PR #365: autoRecallExcludeAgents
+          if (config.autoRecallExcludeAgents?.includes(agentId)) {
+            api.logger.info(`memory-lancedb-pro: auto-recall skipped for excluded agent=${agentId}`);
+            return undefined;
+          }
 
           // FR-04: Truncate long prompts (e.g. file attachments) before embedding.
           // Auto-recall only needs the user's intent, not full attachment text.
@@ -3778,6 +3788,8 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     autoRecallMaxItems: parsePositiveInt(cfg.autoRecallMaxItems) ?? 3,
     autoRecallMaxChars: parsePositiveInt(cfg.autoRecallMaxChars) ?? 600,
     autoRecallPerItemMaxChars: parsePositiveInt(cfg.autoRecallPerItemMaxChars) ?? 180,
+    autoRecallExcludeAgents: Array.isArray(cfg.autoRecallExcludeAgents) ? cfg.autoRecallExcludeAgents : undefined,
+    recallMode: (cfg.recallMode === "full" || cfg.recallMode === "summary" || cfg.recallMode === "adaptive" || cfg.recallMode === "off") ? cfg.recallMode : "full",
     captureAssistant: cfg.captureAssistant === true,
     retrieval: typeof cfg.retrieval === "object" && cfg.retrieval !== null ? cfg.retrieval as any : undefined,
     decay: typeof cfg.decay === "object" && cfg.decay !== null ? cfg.decay as any : undefined,
