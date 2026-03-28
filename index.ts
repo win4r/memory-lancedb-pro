@@ -3827,7 +3827,7 @@ export function parsePluginConfig(value: unknown): PluginConfig {
         ensureLearningFiles: (cfg.selfImprovement as Record<string, unknown>).ensureLearningFiles !== false,
       }
       : {
-        enabled: false,
+        enabled: true,
         beforeResetNote: false,
         skipSubagentBootstrap: false,
         ensureLearningFiles: false,
